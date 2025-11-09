@@ -1,0 +1,20 @@
+{
+  "name": "pavingstone-chatbot",
+  "version": "1.0.0",
+  "description": "AI estimator backend for The Paving Stone Pros",
+  "main": "server.js",
+  "scripts": {
+    "start": "node server.js",
+    "test": "echo \"Error: no test specified\" && exit 1"
+  },
+  "keywords": [],
+  "author": "Adam Bergen",
+  "license": "ISC",
+  "dependencies": {
+    "cors": "^2.8.5",
+    "dotenv": "^16.0.3",
+    "express": "^4.18.2",
+    "nodemailer": "^7.0.10",
+    "openai": "^4.0.0"
+  }
+}
