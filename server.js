@@ -221,26 +221,7 @@ function extractEstimationMeta(messages) {
     .map((m) => (m.content || "").toLowerCase())
     .join(" ");
 
-  // Square footage: "20x20" or "400 sq ft"
-  let sqft = 0;
-  const dimMatch = allUserText.match(/(\d+)\s*x\s*(\d+)/); // e.g. "20x20"
-  if (dimMatch) {
-    const length = parseInt(dimMatch[1], 10);
-    const width = parseInt(dimMatch[2], 10);
-    if (!isNaN(length) && !isNaN(width)) {
-      sqft = length * width;
-    }
-  } else {
-    const sqftMatch = allUserText.match(
-      /(\d+)\s*(sq\.?\s*ft|square\s*feet|ft2)/
-    );
-    if (sqftMatch) {
-      const val = parseInt(sqftMatch[1], 10);
-      if (!isNaN(val)) sqft = val;
-    }
-  }
-
-  // Project type
+  // Project type first (used for sqft fallback)
   let project_type = null;
   if (allUserText.includes("driveway")) {
     project_type = "driveway";
@@ -256,6 +237,39 @@ function extractEstimationMeta(messages) {
     allUserText.includes("landing")
   ) {
     project_type = "patio";
+  }
+
+  // Square footage: "20x20", "400 sq ft", or bare number in context (e.g. "2267 driveway")
+  let sqft = 0;
+
+  // 1) Dimension pattern
+  const dimMatch = allUserText.match(/(\d+)\s*x\s*(\d+)/);
+  if (dimMatch) {
+    const length = parseInt(dimMatch[1], 10);
+    const width = parseInt(dimMatch[2], 10);
+    if (!isNaN(length) && !isNaN(width)) {
+      sqft = length * width;
+    }
+  }
+
+  // 2) Explicit "sq ft" pattern if no dimension detected
+  if (sqft === 0) {
+    const sqftMatch = allUserText.match(
+      /(\d+)\s*(sq\.?\s*ft|square\s*feet|ft2)/
+    );
+    if (sqftMatch) {
+      const val = parseInt(sqftMatch[1], 10);
+      if (!isNaN(val)) sqft = val;
+    }
+  }
+
+  // 3) Fallback: single bare number in area context (e.g. "2267 roman driveway")
+  if (sqft === 0 && project_type) {
+    const bareMatch = allUserText.match(/(\d{2,5})/);
+    if (bareMatch) {
+      const val = parseInt(bareMatch[1], 10);
+      if (!isNaN(val)) sqft = val;
+    }
   }
 
   // Backyard?
@@ -309,7 +323,6 @@ function extractEstimationMeta(messages) {
 
   // Material
   let material_code = inferMaterialCodeFromText(allUserText);
-
   const explicitMaterialMatch = allUserText.match(
     /holland|broadway 65|broadway 100|broadway plank|verano|roman|fjord|lexington|terrace|brookside|diamond face|arborwood|origins|dimensions|mega libre|blu 60|blu grande|blu polished/
   );
@@ -369,26 +382,7 @@ app.post("/api/chat", async (req, res) => {
 
     const userAskedPrice = askingForPrice || confirmingReady;
 
-    // 1) Square footage
-    let sqft = 0;
-    const sqftMatch =
-      allUserText.match(/(\d+)\s*(sq\.? ?ft|square ?feet|ft2)/) ||
-      allUserText.match(/(\d+)\s*x\s*(\d+)/);
-
-    if (sqftMatch) {
-      if (sqftMatch[3]) {
-        const width = parseFloat(sqftMatch[1]);
-        const length = parseFloat(sqftMatch[2]);
-        if (!isNaN(width) && !isNaN(length)) {
-          sqft = width * length;
-        }
-      } else {
-        const val = parseFloat(sqftMatch[1]);
-        if (!isNaN(val)) sqft = val;
-      }
-    }
-
-    // 2) Project type
+    // ---- Project type first (for sqft fallback)
     let project_type = null;
     if (allUserText.includes("driveway")) {
       project_type = "driveway";
@@ -406,13 +400,46 @@ app.post("/api/chat", async (req, res) => {
       project_type = "patio";
     }
 
-    // 3) Backyard?
+    // ---- Square footage
+    let sqft = 0;
+
+    // 1) Dimensions like "20x20"
+    const dimMatch = allUserText.match(/(\d+)\s*x\s*(\d+)/);
+    if (dimMatch) {
+      const length = parseFloat(dimMatch[1]);
+      const width = parseFloat(dimMatch[2]);
+      if (!isNaN(length) && !isNaN(width)) {
+        sqft = length * width;
+      }
+    }
+
+    // 2) "400 sq ft" style
+    if (sqft === 0) {
+      const sqftMatch = allUserText.match(
+        /(\d+)\s*(sq\.? ?ft|square ?feet|ft2)/
+      );
+      if (sqftMatch) {
+        const val = parseFloat(sqftMatch[1]);
+        if (!isNaN(val)) sqft = val;
+      }
+    }
+
+    // 3) Fallback: bare number in context ("2267 roman driveway")
+    if (sqft === 0 && project_type) {
+      const bareMatch = allUserText.match(/(\d{2,5})/);
+      if (bareMatch) {
+        const val = parseFloat(bareMatch[1]);
+        if (!isNaN(val)) sqft = val;
+      }
+    }
+
+    // Backyard?
     let isBackyard =
       allUserText.includes("backyard") ||
       allUserText.includes("back yard") ||
       (allUserText.includes("back") && !allUserText.includes("front"));
 
-    // 4) Access level – track if user actually mentioned it
+    // Access level – track if user actually mentioned it
     let access_level = "medium";
     let userMentionedAccess = false;
 
@@ -434,7 +461,7 @@ app.post("/api/chat", async (req, res) => {
       userMentionedAccess = true;
     }
 
-    // 5) City / town (basic detection)
+    // City / town (basic detection)
     let city_town = null;
     let is_out_of_town = false;
     if (allUserText.includes("winnipeg")) {
@@ -459,10 +486,8 @@ app.post("/api/chat", async (req, res) => {
       is_out_of_town = true;
     }
 
-    // 6) Material code
+    // Material code
     let material_code = inferMaterialCodeFromText(allUserText);
-
-    // Give priority to explicit matches
     const explicitMaterialMatch = allUserText.match(
       /holland|broadway 65|broadway 100|broadway plank|verano|roman|fjord|lexington|terrace|brookside|diamond face|arborwood|origins|dimensions|mega libre|blu 60|blu grande|blu polished/
     );
