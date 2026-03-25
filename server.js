@@ -97,6 +97,45 @@ async function extractProjectDetailsAI(messages) {
   }
 }
 
+// ===== CUSTOMER FACING BOT =====
+app.post("/api/chat", async (req, res) => {
+  try {
+    const messages = Array.isArray(req.body.messages) ? req.body.messages : [];
+
+    // 1. Get conversational reply from ChatGPT
+    const completion = await client.chat.completions.create({
+      model: "gpt-4o-mini",
+      messages: [{ role: "system", content: SYSTEM_PROMPT }, ...messages],
+      temperature: 0.5, 
+    });
+
+    let reply = completion.choices[0].message.content;
+
+    // 2. If the conversation sounds like they are asking for an estimate, calculate it!
+    const recentText = (reply + " " + (messages[messages.length - 1]?.content || "")).toLowerCase();
+    
+    if (recentText.includes("estimate") || recentText.includes("cost") || recentText.includes("price") || recentText.includes("ballpark")) {
+      const details = await extractProjectDetailsAI(messages);
+      
+      // Only append the estimate if we successfully extracted a square footage
+      if (details && details.sqft > 0) {
+        const estimate = calculatePavingEstimate({
+            ...details,
+            areas: [{ square_feet: details.sqft, is_backyard: details.isBackyard }]
+        });
+        
+        reply += `\n\nBased on your details (approx ${details.sqft} sqft ${details.project_type || 'project'}), a rough ballpark estimate is between **$${estimate.low.toLocaleString()} and $${estimate.high.toLocaleString()} CAD**. \n\n*Please note this is just a rough guess based on averages!*`;
+      }
+    }
+
+    res.json({ reply });
+
+  } catch (err) {
+    console.error("Customer Chat Error:", err);
+    res.status(500).json({ reply: "Sorry, I'm having trouble connecting right now. Please try again later." });
+  }
+});
+
 // ===== INTERNAL ESTIMATOR / APP INTEGRATION =====
 
 app.post("/api/internal-chat", async (req, res) => {
