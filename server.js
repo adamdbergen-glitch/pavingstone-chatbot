@@ -206,9 +206,14 @@ app.post("/api/internal-chat", async (req, res) => {
   try {
     const messages = Array.isArray(req.body.messages) ? req.body.messages : [];
 
-    // 1. ISOLATED PROMPT: The public bot never sees this.
+    // 1. ISOLATED PROMPT: Now includes strict pricing rules and the customer data schema
     const ISOLATED_INTERNAL_PROMPT = `
       You are Adam's internal assistant. Talk to Adam to figure out the project scope.
+      
+      CRITICAL RULE: NEVER give a price, cost, or dollar estimate in your text reply. 
+      You do not know the pricing formula. The external UI will handle all pricing 
+      calculations automatically once you extract the variables.
+      
       Return a STRICT JSON object with your conversational reply and the extracted data:
       {
         "reply": "Your conversational reply to Adam.",
@@ -218,6 +223,12 @@ app.post("/api/internal-chat", async (req, res) => {
           "is_backyard": boolean,
           "access_level": "easy" | "medium" | "difficult",
           "material_text": "paver name or empty"
+        },
+        "customer": {
+          "name": "extracted full name or empty",
+          "phone": "extracted phone number or empty",
+          "email": "extracted email or empty",
+          "address": "extracted street address or empty"
         }
       }
     `;
@@ -243,14 +254,19 @@ app.post("/api/internal-chat", async (req, res) => {
       is_out_of_town: false
     };
 
-    // 4. Return the AI reply and the variables (Let the React app do the math)
-    res.json({ reply: data.reply, meta: meta });
+    // 4. Return the AI reply, the variables, and the newly extracted customer data
+    res.json({ 
+      reply: data.reply, 
+      meta: meta,
+      customer: data.customer || {}
+    });
 
   } catch (err) {
     console.error("Internal Chat Error:", err);
     res.status(500).json({ error: "Server error" });
   }
 });
+
 //
 // ===== LEAD CAPTURE (GMAIL) =====
 //
@@ -278,7 +294,7 @@ app.post("/api/lead", async (req, res) => {
 
     const mailOptions = {
       from: `"Paving Bot" <${process.env.SMTP_USER}>`,
-      to: process.env.SMTP_USER, // Sends to YOU (Adam)
+      to: process.env.SMTP_USER, // Sends to YOU
       subject: `🚧 New Lead: ${safeContact.name || "Unknown"} (${safeContact.city || 'Winnipeg'})`,
       text: `
       NEW LEAD DETAILS
