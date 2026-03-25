@@ -8,7 +8,7 @@ const MIN_JOB = 2500;
 
 // Cost for gravel, sand, edge restraints, and disposal per sq ft.
 // In Winnipeg, 6" of base + bedding sand + disposal is approx $4-$6/sqft cost.
-const BASE_PREP_COST = 3.00; 
+const BASE_PREP_COST = 0.00; 
 
 const MATERIALS = {
   // Barkman – budget
