@@ -14,7 +14,6 @@ const {
 const app = express();
 
 // 1. ROBUST CORS SETUP
-// origin: true allows embedded widgets on any site (Squarespace/Wix) to work
 const corsOptions = {
   origin: true, 
   methods: ["GET", "POST", "OPTIONS"],
@@ -22,27 +21,24 @@ const corsOptions = {
 };
 
 app.use(cors(corsOptions));
-app.options("*", cors(corsOptions)); // Handle preflight requests
+app.options("*", cors(corsOptions));
 
-// 2. SAFETY: Limit JSON payload size to prevent spam/crashes
+// 2. SAFETY: Limit JSON payload size
 app.use(express.json({ limit: "1mb" }));
 
 const client = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
 
-// Gmail email transporter
 const transporter = nodemailer.createTransport({
   host: process.env.SMTP_HOST || "smtp.gmail.com", 
   port: parseInt(process.env.SMTP_PORT || "587", 10), 
   secure: false, 
   auth: {
-    user: process.env.SMTP_USER, // Your Gmail
-    pass: process.env.SMTP_PASS, // Your App Password
+    user: process.env.SMTP_USER,
+    pass: process.env.SMTP_PASS, 
   },
 });
 
-//
 // ===== SYSTEM PROMPTS =====
-//
 
 const SYSTEM_PROMPT = `
 You are the estimating assistant for "The Paving Stone Pros" in Manitoba, Canada.
@@ -72,24 +68,9 @@ with paving stone / landscaping estimates and then ask what kind of project they
    Do NOT invent dollar amounts yourself.
 `;
 
-const INTERNAL_SYSTEM_PROMPT = `
-You are Adam's internal assistant for The Paving Stone Pros.
-
-Primary job:
-- Help Adam think through paving stone / landscaping projects.
-- Use the numbers the server attaches (estimate ranges, meta).
-- Generally help with business writing: scope descriptions, emails, notes, etc.
-
-You are allowed to discuss other topics if Adam asks, but default to thinking like 
-an experienced hardscape estimator and contractor.
-`;
-
-//
 // ===== AI EXTRACTOR =====
-//
 
 async function extractProjectDetailsAI(messages) {
-  // CRASH PROTECTION: Ensure messages is an array
   const safeMessages = Array.isArray(messages) ? messages : [];
 
   const extractionPrompt = `
@@ -122,13 +103,12 @@ async function extractProjectDetailsAI(messages) {
     const material_code = inferMaterialCodeFromText(data.material_text || "");
 
     return {
-      // TYPE SAFETY: Force Number() to prevent string math errors
       sqft: Number(data.sqft) || 0,
       project_type: data.project_type,
-      isBackyard: !!data.is_backyard, // Force boolean
+      isBackyard: !!data.is_backyard,
       access_level: data.access_level || "medium",
       city_town: data.city_town || "Winnipeg",
-      is_out_of_town: !!data.is_out_of_town, // Force boolean
+      is_out_of_town: !!data.is_out_of_town,
       material_code: material_code
     };
   } catch (err) {
@@ -137,15 +117,12 @@ async function extractProjectDetailsAI(messages) {
   }
 }
 
-//
 // ===== PUBLIC / CUSTOMER-FACING CHATBOT =====
-//
 
 app.post("/api/chat", async (req, res) => {
   try {
     const messages = Array.isArray(req.body.messages) ? req.body.messages : [];
 
-    // 1. Get the conversational reply
     const completion = await client.chat.completions.create({
       model: "gpt-4o-mini",
       messages: [{ role: "system", content: SYSTEM_PROMPT }, ...messages],
@@ -153,10 +130,8 @@ app.post("/api/chat", async (req, res) => {
     });
     let aiReply = completion.choices?.[0]?.message?.content?.trim() || "";
 
-    // 2. Extract Details
     const meta = await extractProjectDetailsAI(messages);
     
-    // 3. Determine if user wants price
     const lastUserMessage = messages[messages.length - 1]?.content || "";
     const lowerLastUser = lastUserMessage.toLowerCase();
     const askingForPrice = /\b(price|cost|ballpark|estimate|quote)\b/.test(lowerLastUser);
@@ -166,7 +141,6 @@ app.post("/api/chat", async (req, res) => {
     let estimate = null;
     let reply = aiReply;
 
-    // 4. Calculate Estimate if ready
     if (meta.sqft > 0 && meta.project_type && userAskedPrice) {
       const rawEstimate = calculatePavingEstimate({
         project_type: meta.project_type,
@@ -177,12 +151,10 @@ app.post("/api/chat", async (req, res) => {
         is_out_of_town: meta.is_out_of_town,
       });
 
-      // Buffer for public facing (Widen range)
       const bufferedLow = Math.round(rawEstimate.low * 0.9);
       const bufferedHigh = Math.round(rawEstimate.high * 1.1);
       const tierDesc = getMaterialTierDescription(meta.material_code);
 
-      // FORMATTING: Use toLocaleString for nice commas
       reply = `Based on what you've told me (${meta.sqft} sqft ${meta.project_type}), your project is likely in the range of **$${bufferedLow.toLocaleString()} – $${bufferedHigh.toLocaleString()} +GST**.\n\nThe material is ${tierDesc}.\n\n⚠️ This is a rough ballpark only. Shall we book a site visit?`;
 
       estimate = {
@@ -199,14 +171,13 @@ app.post("/api/chat", async (req, res) => {
   }
 });
 
-//
 // ===== INTERNAL ESTIMATOR / APP INTEGRATION =====
-//
+
 app.post("/api/internal-chat", async (req, res) => {
   try {
     const messages = Array.isArray(req.body.messages) ? req.body.messages : [];
 
-    // 1. ISOLATED PROMPT: Now includes strict pricing rules and the customer data schema
+    // 1. ISOLATED PROMPT: Added "scope_summary" to the required JSON
     const ISOLATED_INTERNAL_PROMPT = `
       You are Adam's internal assistant. Talk to Adam to figure out the project scope.
       
@@ -222,7 +193,8 @@ app.post("/api/internal-chat", async (req, res) => {
           "project_type": "patio" | "walkway" | "driveway" | null,
           "is_backyard": boolean,
           "access_level": "easy" | "medium" | "difficult",
-          "material_text": "paver name or empty"
+          "material_text": "paver name or empty",
+          "scope_summary": "A concise 2-3 sentence professional summary of the project scope and any special requests."
         },
         "customer": {
           "name": "extracted full name or empty",
@@ -233,28 +205,27 @@ app.post("/api/internal-chat", async (req, res) => {
       }
     `;
 
-    // 2. Fetch from OpenAI
     const completion = await client.chat.completions.create({
       model: "gpt-4o-mini",
       response_format: { type: "json_object" },
       messages: [{ role: "system", content: ISOLATED_INTERNAL_PROMPT }, ...messages],
-      temperature: 0.2, // Low temp prevents JSON formatting errors
+      temperature: 0.2, 
     });
 
     const data = JSON.parse(completion.choices[0].message.content);
     
-    // 3. Clean up the variables to send back to the React app
+    // 3. Clean up the variables (now including scope_summary)
     const meta = {
       sqft: Number(data.meta?.sqft) || 0,
       project_type: data.meta?.project_type || 'patio',
       isBackyard: !!data.meta?.is_backyard,
       access_level: data.meta?.access_level || "medium",
       material_code: inferMaterialCodeFromText(data.meta?.material_text || ""),
+      scope_summary: data.meta?.scope_summary || "", // <-- Passed to frontend
       city_town: "Winnipeg",
       is_out_of_town: false
     };
 
-    // 4. Return the AI reply, the variables, and the newly extracted customer data
     res.json({ 
       reply: data.reply, 
       meta: meta,
@@ -267,14 +238,11 @@ app.post("/api/internal-chat", async (req, res) => {
   }
 });
 
-//
 // ===== LEAD CAPTURE (GMAIL) =====
-//
 
 app.post("/api/lead", async (req, res) => {
   try {
     const { contact, estimate, messages } = req.body;
-    // CRASH PROTECTION: Handle missing/malformed contact info
     const safeContact = contact || {};
     const safeMessages = Array.isArray(messages) ? messages : [];
 
@@ -284,7 +252,6 @@ app.post("/api/lead", async (req, res) => {
 
     let estimateText = "No estimate generated.";
     
-    // FORMATTING: Clean up the email numbers
     if (estimate) {
       estimateText = `
       Range:   $${Number(estimate.low).toLocaleString()} - $${Number(estimate.high).toLocaleString()} +GST
@@ -294,7 +261,7 @@ app.post("/api/lead", async (req, res) => {
 
     const mailOptions = {
       from: `"Paving Bot" <${process.env.SMTP_USER}>`,
-      to: process.env.SMTP_USER, // Sends to YOU
+      to: process.env.SMTP_USER, 
       subject: `🚧 New Lead: ${safeContact.name || "Unknown"} (${safeContact.city || 'Winnipeg'})`,
       text: `
       NEW LEAD DETAILS
