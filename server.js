@@ -199,6 +199,38 @@ app.post("/api/internal-chat", async (req, res) => {
   }
 });
 
+// ===== EMAIL LEAD ROUTE =====
+// Note: Ensure this path ("/api/lead") matches exactly what your frontend form is fetching/posting to!
+app.post("/api/lead", async (req, res) => {
+  try {
+    // These match standard form fields. Adjust if your frontend sends different variable names.
+    const { name, email, phone, message } = req.body;
+
+    const mailOptions = {
+      from: process.env.SMTP_USER,
+      to: process.env.SMTP_USER, // Sends the email to yourself (Adam)
+      subject: `New Lead from Paving Stone Pros Chat`,
+      text: `
+        You have a new lead from the chatbot form!
+        
+        Name: ${name || 'N/A'}
+        Phone: ${phone || 'N/A'}
+        Email: ${email || 'N/A'}
+        
+        Message/Details:
+        ${message || 'N/A'}
+      `
+    };
+
+    await transporter.sendMail(mailOptions);
+    res.json({ success: true, message: "Email sent successfully!" });
+
+  } catch (err) {
+    console.error("Email Error:", err);
+    res.status(500).json({ error: "Failed to send email." });
+  }
+});
+
 const port = process.env.PORT || 3001;
 app.listen(port, () => {
   console.log(`🚀 Chatbot server running on port ${port}`);
