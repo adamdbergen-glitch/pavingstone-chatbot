@@ -200,77 +200,57 @@ app.post("/api/chat", async (req, res) => {
 });
 
 //
-// ===== INTERNAL ESTIMATOR / QUICKBOOKS HELPER =====
+// ===== INTERNAL ESTIMATOR / APP INTEGRATION =====
 //
-
 app.post("/api/internal-chat", async (req, res) => {
   try {
     const messages = Array.isArray(req.body.messages) ? req.body.messages : [];
 
+    // 1. ISOLATED PROMPT: The public bot never sees this.
+    const ISOLATED_INTERNAL_PROMPT = `
+      You are Adam's internal assistant. Talk to Adam to figure out the project scope.
+      Return a STRICT JSON object with your conversational reply and the extracted data:
+      {
+        "reply": "Your conversational reply to Adam.",
+        "meta": {
+          "sqft": number (or 0),
+          "project_type": "patio" | "walkway" | "driveway" | null,
+          "is_backyard": boolean,
+          "access_level": "easy" | "medium" | "difficult",
+          "material_text": "paver name or empty"
+        }
+      }
+    `;
+
+    // 2. Fetch from OpenAI
     const completion = await client.chat.completions.create({
       model: "gpt-4o-mini",
-      messages: [{ role: "system", content: INTERNAL_SYSTEM_PROMPT }, ...messages],
-      temperature: 0.4,
+      response_format: { type: "json_object" },
+      messages: [{ role: "system", content: ISOLATED_INTERNAL_PROMPT }, ...messages],
+      temperature: 0.2, // Low temp prevents JSON formatting errors
     });
-    const aiReply = completion.choices?.[0]?.message?.content?.trim() || "";
 
-    const meta = await extractProjectDetailsAI(messages);
+    const data = JSON.parse(completion.choices[0].message.content);
+    
+    // 3. Clean up the variables to send back to the React app
+    const meta = {
+      sqft: Number(data.meta?.sqft) || 0,
+      project_type: data.meta?.project_type || 'patio',
+      isBackyard: !!data.meta?.is_backyard,
+      access_level: data.meta?.access_level || "medium",
+      material_code: inferMaterialCodeFromText(data.meta?.material_text || ""),
+      city_town: "Winnipeg",
+      is_out_of_town: false
+    };
 
-    let estimate = null;
-    if (meta.sqft > 0 && meta.project_type) {
-      estimate = calculatePavingEstimate({
-        project_type: meta.project_type,
-        areas: [{ square_feet: meta.sqft, is_backyard: meta.isBackyard }],
-        access_level: meta.access_level,
-        material_code: meta.material_code,
-        city_town: meta.city_town,
-        is_out_of_town: meta.is_out_of_town,
-      });
-    }
+    // 4. Return the AI reply and the variables (Let the React app do the math)
+    res.json({ reply: data.reply, meta: meta });
 
-    let qb_headline = null;
-    let qb_description = null;
-    let email_body = null;
-
-    if (estimate) {
-        const tierDesc = getMaterialTierDescription(meta.material_code);
-        const INTERNAL_QB_PROMPT = `
-        You are helping Adam from "The Paving Stone Pros".
-        Return STRICT JSON with: { "qb_headline": string, "qb_description": string, "email_body": string }
-        `;
-
-        const payload = { project: { ...meta, material_tier: tierDesc }, estimate };
-
-        const fmtCompletion = await client.chat.completions.create({
-            model: "gpt-4o-mini",
-            response_format: { type: "json_object" },
-            messages: [
-                { role: "system", content: INTERNAL_QB_PROMPT },
-                { role: "user", content: JSON.stringify(payload) }
-            ],
-            temperature: 0.2,
-        });
-
-        const parsed = JSON.parse(fmtCompletion.choices[0].message.content);
-        qb_headline = parsed.qb_headline;
-        qb_description = parsed.qb_description;
-        email_body = parsed.email_body;
-    }
-
-    return res.json({
-      reply: aiReply,
-      estimate,
-      meta,
-      qb_headline,
-      qb_description,
-      email_body,
-    });
   } catch (err) {
-    console.error("Error in /api/internal-chat:", err);
+    console.error("Internal Chat Error:", err);
     res.status(500).json({ error: "Server error" });
   }
 });
-
 //
 // ===== LEAD CAPTURE (GMAIL) =====
 //
