@@ -5,6 +5,7 @@ const express = require("express");
 const cors = require("cors");
 const OpenAI = require("openai");
 const nodemailer = require("nodemailer");
+const https = require("https"); // <--- ADDED HTTPS MODULE HERE
 const {
   calculatePavingEstimate,
   inferMaterialCodeFromText,
@@ -40,7 +41,6 @@ const transporter = nodemailer.createTransport({
 });
 
 // ===== SYSTEM PROMPTS =====
-
 const SYSTEM_PROMPT = `
 You are the conversational estimating assistant for "The Paving Stone Pros" in Manitoba, Canada.
 
@@ -57,7 +57,6 @@ with paving stone / landscaping estimates.
 `;
 
 // ===== AI EXTRACTOR =====
-
 async function extractProjectDetailsAI(messages) {
   const safeMessages = Array.isArray(messages) ? messages : [];
   const extractionPrompt = `
@@ -105,7 +104,6 @@ app.post("/api/chat", async (req, res) => {
   try {
     const messages = Array.isArray(req.body.messages) ? req.body.messages : [];
 
-    // 1. Get conversational reply from ChatGPT
     const completion = await client.chat.completions.create({
       model: "gpt-4o-mini",
       messages: [{ role: "system", content: SYSTEM_PROMPT }, ...messages],
@@ -113,14 +111,11 @@ app.post("/api/chat", async (req, res) => {
     });
 
     let reply = completion.choices[0].message.content;
-
-    // 2. If the conversation sounds like they are asking for an estimate, calculate it!
     const recentText = (reply + " " + (messages[messages.length - 1]?.content || "")).toLowerCase();
     
     if (recentText.includes("estimate") || recentText.includes("cost") || recentText.includes("price") || recentText.includes("ballpark")) {
       const details = await extractProjectDetailsAI(messages);
       
-      // Only append the estimate if we successfully extracted a square footage
       if (details && details.sqft > 0) {
         const estimate = calculatePavingEstimate({
             ...details,
@@ -132,7 +127,6 @@ app.post("/api/chat", async (req, res) => {
     }
 
     res.json({ reply });
-
   } catch (err) {
     console.error("Customer Chat Error:", err);
     res.status(500).json({ reply: "Sorry, I'm having trouble connecting right now. Please try again later." });
@@ -144,7 +138,6 @@ app.post("/api/internal-chat", async (req, res) => {
   try {
     const messages = Array.isArray(req.body.messages) ? req.body.messages : [];
 
-    // UPDATED PROMPT: Added "scope_summary" and "customer" extraction
     const ISOLATED_INTERNAL_PROMPT = `
       You are Adam's internal assistant. Talk to Adam to figure out the project scope.
       
@@ -185,13 +178,12 @@ app.post("/api/internal-chat", async (req, res) => {
       isBackyard: !!data.meta?.is_backyard,
       access_level: data.meta?.access_level || "medium",
       material_code: inferMaterialCodeFromText(data.meta?.material_text || ""),
-      scope_summary: data.meta?.scope_summary || "", // Pass the summary to frontend
+      scope_summary: data.meta?.scope_summary || "", 
       city_town: "Winnipeg",
       is_out_of_town: false
     };
 
     res.json({ reply: data.reply, meta: meta, customer: data.customer || {} });
-
   } catch (err) {
     console.error("Internal Chat Error:", err);
     res.status(500).json({ error: "Server error" });
@@ -307,15 +299,15 @@ app.post("/api/send-followup", async (req, res) => {
   }
 });
 
-// ===== APPROVAL NOTIFICATION TO ADAM & CUSTOMER =====
+// ===== APPROVAL NOTIFICATION TO ADAM & CUSTOMER & ZAPIER =====
 app.post("/api/approve-estimate", async (req, res) => {
   try {
-    const { customerName, customerEmail, projectName, adminLink, contractUrl, portalLink, startDate } = req.body;
+    const { customerName, customerEmail, projectName, adminLink, contractUrl, portalLink, startDate, estimateAmount } = req.body;
 
     // 1. Email Adam
     const mailOptionsAdmin = {
       from: process.env.SMTP_USER,
-      to: process.env.SMTP_USER, // Sends back to you
+      to: process.env.SMTP_USER,
       subject: `🎉 PROJECT APPROVED: ${projectName}`,
       html: `
         <div style="font-family: sans-serif; max-width: 600px; padding: 20px; border: 2px solid #10b981; border-radius: 10px; background-color: #ecfdf5;">
@@ -355,6 +347,46 @@ app.post("/api/approve-estimate", async (req, res) => {
 
     await transporter.sendMail(mailOptionsAdmin);
     if(customerEmail) await transporter.sendMail(mailOptionsCustomer);
+
+    // 3. SEND DATA TO ZAPIER/MAKE WEBHOOK FOR QUICKBOOKS
+    if (process.env.ZAPIER_WEBHOOK_URL) {
+      try {
+        const payload = JSON.stringify({
+          customerName: customerName,
+          customerEmail: customerEmail || "no-email@provided.com",
+          projectName: projectName,
+          estimateAmount: estimateAmount,
+          depositAmount: 500, // Hardcoded standard deposit
+          contractUrl: contractUrl,
+          status: "Approved",
+          dateApproved: new Date().toISOString()
+        });
+
+        const url = new URL(process.env.ZAPIER_WEBHOOK_URL);
+        const options = {
+          hostname: url.hostname,
+          path: url.pathname + url.search,
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            'Content-Length': Buffer.byteLength(payload)
+          }
+        };
+
+        const reqWebhook = https.request(options, (resWebhook) => {
+          console.log(`Zapier Webhook Status: ${resWebhook.statusCode}`);
+        });
+
+        reqWebhook.on('error', (e) => {
+          console.error("Failed to ping webhook:", e);
+        });
+
+        reqWebhook.write(payload);
+        reqWebhook.end();
+      } catch (webhookErr) {
+        console.error("Webhook prep error:", webhookErr);
+      }
+    }
 
     res.json({ success: true });
   } catch (err) {
