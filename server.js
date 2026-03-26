@@ -201,21 +201,48 @@ app.post("/api/internal-chat", async (req, res) => {
 // ===== EMAIL LEAD ROUTE =====
 app.post("/api/lead", async (req, res) => {
   try {
-    const { name, email, phone, message } = req.body;
+    // 1. Grab fields, anticipating different potential names from the frontend
+    const name = req.body.name || req.body.fullName || req.body.customerName || req.body.Name;
+    const email = req.body.email || req.body.emailAddress || req.body.Email;
+    const phone = req.body.phone || req.body.phoneNumber || req.body.Phone;
+    const message = req.body.message || req.body.details || req.body.Message;
+    
+    // 2. Grab the chat transcript (usually sent as 'messages' array or 'transcript')
+    const chatHistory = req.body.messages || req.body.transcript || req.body.history;
+    
+    let formattedTranscript = "No transcript provided.";
+    if (Array.isArray(chatHistory)) {
+      // Format the array into a readable script
+      formattedTranscript = chatHistory
+        .map(m => `${m.role === 'user' ? 'CUSTOMER' : 'BOT'}: ${m.content}`)
+        .join('\n\n');
+    } else if (typeof chatHistory === 'string') {
+      // If it was already sent as a formatted string
+      formattedTranscript = chatHistory;
+    }
 
+    // 3. Construct the Email
     const mailOptions = {
       from: process.env.SMTP_USER,
       to: process.env.SMTP_USER, 
       subject: `New Lead from Paving Stone Pros Chat`,
-      text: `
-        You have a new lead from the chatbot form!
+      text: `You have a new lead from the chatbot!
         
-        Name: ${name || 'N/A'}
-        Phone: ${phone || 'N/A'}
-        Email: ${email || 'N/A'}
+Name: ${name || 'N/A'}
+Phone: ${phone || 'N/A'}
+Email: ${email || 'N/A'}
         
-        Message/Details:
-        ${message || 'N/A'}
+Message/Details:
+${message || 'N/A'}
+
+--- CHAT TRANSCRIPT ---
+
+${formattedTranscript}
+
+
+--- RAW DATA DUMP ---
+(If any fields above say N/A, the form data is captured below:)
+${JSON.stringify(req.body, null, 2)}
       `
     };
 
