@@ -288,25 +288,73 @@ app.post("/api/send-estimate", async (req, res) => {
   }
 });
 
-// ===== APPROVAL NOTIFICATION TO ADAM =====
-app.post("/api/approve-estimate", async (req, res) => {
+// ===== SEND FOLLOW-UP EMAIL =====
+app.post("/api/send-followup", async (req, res) => {
   try {
-    const { customerName, projectName, adminLink } = req.body;
+    const { customerEmail, customerName, projectName, portalLink } = req.body;
 
     const mailOptions = {
+      from: process.env.SMTP_USER,
+      to: customerEmail,
+      subject: `Checking in on your project: ${projectName}`,
+      html: `
+        <div style="font-family: sans-serif; max-width: 600px; margin: 0 auto; padding: 20px; border: 1px solid #e2e8f0; border-radius: 10px;">
+          <h2 style="color: #0f172a;">Hi ${customerName},</h2>
+          <p style="color: #475569; font-size: 16px;">I'm just checking in to see if you had any questions about the estimate we sent over for your project (<strong>${projectName}</strong>).</p>
+          <p style="color: #475569; font-size: 16px;">If you have any questions, feel free to reply directly to this email. If you are ready to move forward, you can approve the contract directly in your portal!</p>
+          <a href="${portalLink}" style="display: inline-block; padding: 12px 24px; background-color: #f59e0b; color: #1e293b; text-decoration: none; font-weight: bold; border-radius: 8px; margin-top: 10px;">View Your Estimate</a>
+          <p style="color: #475569; margin-top: 30px;">Thanks,</p>
+          <p style="color: #94a3b8; font-size: 14px;">- The Paving Stone Pros</p>
+        </div>
+      `
+    };
+
+    await transporter.sendMail(mailOptions);
+    res.json({ success: true });
+  } catch (err) {
+    console.error("Send Followup Error:", err);
+    res.status(500).json({ error: "Failed to send follow up." });
+  }
+});
+
+// ===== APPROVAL NOTIFICATION TO ADAM & CUSTOMER =====
+app.post("/api/approve-estimate", async (req, res) => {
+  try {
+    const { customerName, customerEmail, projectName, adminLink, contractUrl } = req.body;
+
+    // 1. Email Adam
+    const mailOptionsAdmin = {
       from: process.env.SMTP_USER,
       to: process.env.SMTP_USER, // Sends back to you
       subject: `🎉 PROJECT APPROVED: ${projectName}`,
       html: `
         <div style="font-family: sans-serif; max-width: 600px; padding: 20px; border: 2px solid #10b981; border-radius: 10px; background-color: #ecfdf5;">
           <h2 style="color: #065f46; margin-top: 0;">Good news!</h2>
-          <p style="color: #065f46; font-size: 16px;"><strong>${customerName}</strong> has officially approved the estimate for <strong>${projectName}</strong> via their client portal.</p>
+          <p style="color: #065f46; font-size: 16px;"><strong>${customerName}</strong> has officially approved the estimate and signed the contract for <strong>${projectName}</strong>.</p>
           <a href="${adminLink}" style="display: inline-block; padding: 12px 24px; background-color: #10b981; color: #fff; text-decoration: none; font-weight: bold; border-radius: 8px; margin-top: 15px;">View Project Dashboard</a>
+          <p style="margin-top: 15px;"><a href="${contractUrl}" style="color: #047857;">View Signed Contract</a></p>
         </div>
       `
     };
 
-    await transporter.sendMail(mailOptions);
+    // 2. Email Customer Receipt
+    const mailOptionsCustomer = {
+      from: process.env.SMTP_USER,
+      to: customerEmail, 
+      subject: `Project Approved: ${projectName}`,
+      html: `
+        <div style="font-family: sans-serif; max-width: 600px; padding: 20px; border: 1px solid #e2e8f0; border-radius: 10px;">
+          <h2 style="color: #0f172a; margin-top: 0;">Thank you, ${customerName}!</h2>
+          <p style="color: #475569; font-size: 16px;">Your project (<strong>${projectName}</strong>) is officially approved and in our system. We will be in touch shortly to finalize scheduling details.</p>
+          <p style="color: #475569; font-size: 16px;">For your records, you can download a copy of your signed agreement here:</p>
+          <a href="${contractUrl}" style="display: inline-block; padding: 12px 24px; background-color: #f8fafc; color: #0f172a; border: 1px solid #cbd5e1; text-decoration: none; font-weight: bold; border-radius: 8px; margin-top: 10px;">Download Signed Contract</a>
+        </div>
+      `
+    };
+
+    await transporter.sendMail(mailOptionsAdmin);
+    if(customerEmail) await transporter.sendMail(mailOptionsCustomer);
+
     res.json({ success: true });
   } catch (err) {
     console.error("Approve Estimate Error:", err);
