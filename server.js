@@ -140,7 +140,6 @@ app.post("/api/chat", async (req, res) => {
 });
 
 // ===== INTERNAL ESTIMATOR / APP INTEGRATION =====
-
 app.post("/api/internal-chat", async (req, res) => {
   try {
     const messages = Array.isArray(req.body.messages) ? req.body.messages : [];
@@ -200,15 +199,13 @@ app.post("/api/internal-chat", async (req, res) => {
 });
 
 // ===== EMAIL LEAD ROUTE =====
-// Note: Ensure this path ("/api/lead") matches exactly what your frontend form is fetching/posting to!
 app.post("/api/lead", async (req, res) => {
   try {
-    // These match standard form fields. Adjust if your frontend sends different variable names.
     const { name, email, phone, message } = req.body;
 
     const mailOptions = {
       from: process.env.SMTP_USER,
-      to: process.env.SMTP_USER, // Sends the email to yourself (Adam)
+      to: process.env.SMTP_USER, 
       subject: `New Lead from Paving Stone Pros Chat`,
       text: `
         You have a new lead from the chatbot form!
@@ -228,6 +225,65 @@ app.post("/api/lead", async (req, res) => {
   } catch (err) {
     console.error("Email Error:", err);
     res.status(500).json({ error: "Failed to send email." });
+  }
+});
+
+// ===== SEND ESTIMATE TO CUSTOMER =====
+app.post("/api/send-estimate", async (req, res) => {
+  try {
+    const { customerEmail, customerName, projectName, estimateAmount, portalLink } = req.body;
+
+    const mailOptions = {
+      from: process.env.SMTP_USER,
+      to: customerEmail,
+      subject: `Your Project Estimate: ${projectName}`,
+      html: `
+        <div style="font-family: sans-serif; max-width: 600px; margin: 0 auto; padding: 20px; border: 1px solid #e2e8f0; border-radius: 10px;">
+          <h2 style="color: #0f172a;">Hi ${customerName},</h2>
+          <p style="color: #475569; font-size: 16px;">Thank you for considering The Paving Stone Pros! We've put together a ballpark estimate for your project: <strong>${projectName}</strong>.</p>
+          <div style="background-color: #f8fafc; padding: 15px; border-radius: 8px; margin: 20px 0;">
+            <p style="margin: 0; color: #64748b; text-transform: uppercase; font-size: 12px; font-weight: bold;">Estimated Cost</p>
+            <p style="margin: 5px 0 0 0; font-size: 24px; font-weight: 900; color: #0f172a;">$${Number(estimateAmount).toLocaleString()}</p>
+          </div>
+          <p style="color: #475569; font-size: 16px;">You can view full details, message our crew, and <strong>Approve the Project</strong> directly in your secure client portal:</p>
+          <a href="${portalLink}" style="display: inline-block; padding: 12px 24px; background-color: #f59e0b; color: #1e293b; text-decoration: none; font-weight: bold; border-radius: 8px; margin-top: 10px;">View & Approve Estimate</a>
+          <p style="color: #475569; margin-top: 30px;">Looking forward to working with you!</p>
+          <p style="color: #94a3b8; font-size: 14px;">- The Paving Stone Pros</p>
+        </div>
+      `
+    };
+
+    await transporter.sendMail(mailOptions);
+    res.json({ success: true });
+  } catch (err) {
+    console.error("Send Estimate Error:", err);
+    res.status(500).json({ error: "Failed to send estimate." });
+  }
+});
+
+// ===== APPROVAL NOTIFICATION TO ADAM =====
+app.post("/api/approve-estimate", async (req, res) => {
+  try {
+    const { customerName, projectName, adminLink } = req.body;
+
+    const mailOptions = {
+      from: process.env.SMTP_USER,
+      to: process.env.SMTP_USER, // Sends back to you
+      subject: `🎉 PROJECT APPROVED: ${projectName}`,
+      html: `
+        <div style="font-family: sans-serif; max-width: 600px; padding: 20px; border: 2px solid #10b981; border-radius: 10px; background-color: #ecfdf5;">
+          <h2 style="color: #065f46; margin-top: 0;">Good news!</h2>
+          <p style="color: #065f46; font-size: 16px;"><strong>${customerName}</strong> has officially approved the estimate for <strong>${projectName}</strong> via their client portal.</p>
+          <a href="${adminLink}" style="display: inline-block; padding: 12px 24px; background-color: #10b981; color: #fff; text-decoration: none; font-weight: bold; border-radius: 8px; margin-top: 15px;">View Project Dashboard</a>
+        </div>
+      `
+    };
+
+    await transporter.sendMail(mailOptions);
+    res.json({ success: true });
+  } catch (err) {
+    console.error("Approve Estimate Error:", err);
+    res.status(500).json({ error: "Failed to send approval notification." });
   }
 });
 
