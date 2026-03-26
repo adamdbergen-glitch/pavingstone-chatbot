@@ -201,27 +201,19 @@ app.post("/api/internal-chat", async (req, res) => {
 // ===== EMAIL LEAD ROUTE =====
 app.post("/api/lead", async (req, res) => {
   try {
-    // 1. Grab fields, anticipating different potential names from the frontend
     const name = req.body.name || req.body.fullName || req.body.customerName || req.body.Name;
     const email = req.body.email || req.body.emailAddress || req.body.Email;
     const phone = req.body.phone || req.body.phoneNumber || req.body.Phone;
     const message = req.body.message || req.body.details || req.body.Message;
     
-    // 2. Grab the chat transcript (usually sent as 'messages' array or 'transcript')
     const chatHistory = req.body.messages || req.body.transcript || req.body.history;
-    
     let formattedTranscript = "No transcript provided.";
     if (Array.isArray(chatHistory)) {
-      // Format the array into a readable script
-      formattedTranscript = chatHistory
-        .map(m => `${m.role === 'user' ? 'CUSTOMER' : 'BOT'}: ${m.content}`)
-        .join('\n\n');
+      formattedTranscript = chatHistory.map(m => `${m.role === 'user' ? 'CUSTOMER' : 'BOT'}: ${m.content}`).join('\n\n');
     } else if (typeof chatHistory === 'string') {
-      // If it was already sent as a formatted string
       formattedTranscript = chatHistory;
     }
 
-    // 3. Construct the Email
     const mailOptions = {
       from: process.env.SMTP_USER,
       to: process.env.SMTP_USER, 
@@ -241,9 +233,7 @@ ${formattedTranscript}
 
 
 --- RAW DATA DUMP ---
-(If any fields above say N/A, the form data is captured below:)
-${JSON.stringify(req.body, null, 2)}
-      `
+${JSON.stringify(req.body, null, 2)}`
     };
 
     await transporter.sendMail(mailOptions);
@@ -320,7 +310,7 @@ app.post("/api/send-followup", async (req, res) => {
 // ===== APPROVAL NOTIFICATION TO ADAM & CUSTOMER =====
 app.post("/api/approve-estimate", async (req, res) => {
   try {
-    const { customerName, customerEmail, projectName, adminLink, contractUrl } = req.body;
+    const { customerName, customerEmail, projectName, adminLink, contractUrl, portalLink, startDate } = req.body;
 
     // 1. Email Adam
     const mailOptionsAdmin = {
@@ -331,6 +321,7 @@ app.post("/api/approve-estimate", async (req, res) => {
         <div style="font-family: sans-serif; max-width: 600px; padding: 20px; border: 2px solid #10b981; border-radius: 10px; background-color: #ecfdf5;">
           <h2 style="color: #065f46; margin-top: 0;">Good news!</h2>
           <p style="color: #065f46; font-size: 16px;"><strong>${customerName}</strong> has officially approved the estimate and signed the contract for <strong>${projectName}</strong>.</p>
+          <p style="color: #065f46; font-size: 16px;">It has been automatically scheduled for: <strong>${startDate}</strong></p>
           <a href="${adminLink}" style="display: inline-block; padding: 12px 24px; background-color: #10b981; color: #fff; text-decoration: none; font-weight: bold; border-radius: 8px; margin-top: 15px;">View Project Dashboard</a>
           <p style="margin-top: 15px;"><a href="${contractUrl}" style="color: #047857;">View Signed Contract</a></p>
         </div>
@@ -341,13 +332,23 @@ app.post("/api/approve-estimate", async (req, res) => {
     const mailOptionsCustomer = {
       from: process.env.SMTP_USER,
       to: customerEmail, 
-      subject: `Project Approved: ${projectName}`,
+      subject: `Project Approved & Scheduled: ${projectName}`,
       html: `
-        <div style="font-family: sans-serif; max-width: 600px; padding: 20px; border: 1px solid #e2e8f0; border-radius: 10px;">
+        <div style="font-family: sans-serif; max-width: 600px; margin: 0 auto; padding: 20px; border: 1px solid #e2e8f0; border-radius: 10px;">
           <h2 style="color: #0f172a; margin-top: 0;">Thank you, ${customerName}!</h2>
-          <p style="color: #475569; font-size: 16px;">Your project (<strong>${projectName}</strong>) is officially approved and in our system. We will be in touch shortly to finalize scheduling details.</p>
-          <p style="color: #475569; font-size: 16px;">For your records, you can download a copy of your signed agreement here:</p>
-          <a href="${contractUrl}" style="display: inline-block; padding: 12px 24px; background-color: #f8fafc; color: #0f172a; border: 1px solid #cbd5e1; text-decoration: none; font-weight: bold; border-radius: 8px; margin-top: 10px;">Download Signed Contract</a>
+          <p style="color: #475569; font-size: 16px;">Your project (<strong>${projectName}</strong>) is officially approved and your contract has been signed.</p>
+          
+          <div style="background-color: #f8fafc; padding: 15px; border-radius: 8px; margin: 20px 0; border: 1px solid #e2e8f0;">
+            <p style="margin: 0; color: #64748b; text-transform: uppercase; font-size: 12px; font-weight: bold;">Projected Start Date</p>
+            <p style="margin: 5px 0 0 0; font-size: 20px; font-weight: 900; color: #0f172a;">${startDate}</p>
+            <p style="margin: 5px 0 0 0; font-size: 12px; color: #64748b;">(Weather permitting)</p>
+          </div>
+
+          <p style="color: #475569; font-size: 16px;">You can view your active project status, download your signed contract, and message the crew directly in your portal:</p>
+          <a href="${portalLink}" style="display: inline-block; padding: 12px 24px; background-color: #f59e0b; color: #1e293b; text-decoration: none; font-weight: bold; border-radius: 8px; margin-top: 10px;">Go to My Portal</a>
+          
+          <p style="color: #475569; font-size: 16px; margin-top: 20px;">For your records, you can also download a direct copy of your signed agreement here:</p>
+          <a href="${contractUrl}" style="color: #2563eb; font-weight: bold;">Download Signed Contract PDF</a>
         </div>
       `
     };
