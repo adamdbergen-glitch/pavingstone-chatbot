@@ -6,9 +6,9 @@ const cors = require("cors");
 const OpenAI = require("openai");
 const nodemailer = require("nodemailer");
 const https = require("https");
-const fs = require("fs");       // NEW: For handling audio files
-const os = require("os");       // NEW: For temporary audio files
-const path = require("path");   // NEW: For file paths
+const fs = require("fs");       
+const os = require("os");       
+const path = require("path");   
 const {
   calculatePavingEstimate,
   inferMaterialCodeFromText,
@@ -17,6 +17,7 @@ const {
 
 const app = express();
 
+// 1. ROBUST CORS SETUP
 const corsOptions = {
   origin: true, 
   methods: ["GET", "POST", "OPTIONS"],
@@ -25,10 +26,11 @@ const corsOptions = {
 
 app.use(cors(corsOptions));
 app.options("*", cors(corsOptions));
-app.use(express.json({ limit: "50mb" })); // Increased limit just in case of large payloads
+app.use(express.json({ limit: "50mb" })); 
 
 const client = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
 
+// Gmail email transporter
 const transporter = nodemailer.createTransport({
   host: process.env.SMTP_HOST || "smtp.gmail.com", 
   port: parseInt(process.env.SMTP_PORT || "587", 10), 
@@ -45,6 +47,7 @@ You are the conversational estimating assistant for "The Paving Stone Pros" in M
 
 Your ONLY job is to help homeowners describe their paving stone / hardscaping project.
 Once the key details (approximate square footage, project type, material) are known, ask if they want a ballpark estimate.
+If they ask for multiple options (like a patio AND a walkway, or two different sizes), acknowledge both!
 
 CRITICAL RULE: NEVER give a price, cost, dollar amount, or numerical estimate in your text reply. 
 The system will calculate the accurate math and append the price automatically behind the scenes.
@@ -55,19 +58,25 @@ If the user asks off-topic questions, reply briefly that you are only here to he
 with paving stone / landscaping estimates.
 `;
 
+// ===== AI EXTRACTOR (NOW SUPPORTS ARRAYS OF LINE ITEMS) =====
 async function extractProjectDetailsAI(messages) {
   const safeMessages = Array.isArray(messages) ? messages : [];
   const extractionPrompt = `
     You are a data extraction bot. 
     Analyze the conversation history below and extract the **current valid project details**.
+    If the user asks for multiple options (e.g. a 12x15 patio AND a 15x15 patio, or a patio AND a walkway), break them out into separate line items.
+    
     Return JSON ONLY with these fields:
-    - sqft (number)
-    - project_type (string)
-    - is_backyard (boolean)
+    - line_items (Array of objects, each containing):
+        - title (string, e.g. "12x15 Patio")
+        - sqft (number)
+        - project_type (string: patio, walkway, driveway)
+        - is_backyard (boolean)
+        - material_text (string)
     - access_level (string)
     - city_town (string)
     - is_out_of_town (boolean)
-    - material_text (string)
+    
     Conversation:
     ${safeMessages.map(m => `${m.role}: ${m.content}`).join("\n")}
   `;
@@ -80,20 +89,23 @@ async function extractProjectDetailsAI(messages) {
       temperature: 0.1, 
     });
     const data = JSON.parse(completion.choices[0].message.content);
-    const material_code = inferMaterialCodeFromText(data.material_text || "");
+
+    // Process materials for each line item
+    const processedItems = (data.line_items || []).map(item => ({
+      ...item,
+      sqft: Number(item.sqft) || 0,
+      material_code: inferMaterialCodeFromText(item.material_text || "")
+    }));
 
     return {
-      sqft: Number(data.sqft) || 0,
-      project_type: data.project_type,
-      isBackyard: !!data.is_backyard,
+      line_items: processedItems,
       access_level: data.access_level || "medium",
       city_town: data.city_town || "Winnipeg",
-      is_out_of_town: !!data.is_out_of_town,
-      material_code: material_code
+      is_out_of_town: !!data.is_out_of_town
     };
   } catch (err) {
     console.error("AI Extraction Failed:", err);
-    return { sqft: 0, material_code: "barkman_holland" }; 
+    return { line_items: [], access_level: "medium", city_town: "Winnipeg", is_out_of_town: false }; 
   }
 }
 
@@ -111,16 +123,33 @@ app.post("/api/chat", async (req, res) => {
     let reply = completion.choices[0].message.content;
     const recentText = (reply + " " + (messages[messages.length - 1]?.content || "")).toLowerCase();
     
+    // Check if they want an estimate
     if (recentText.includes("estimate") || recentText.includes("cost") || recentText.includes("price") || recentText.includes("ballpark")) {
       const details = await extractProjectDetailsAI(messages);
       
-      if (details && details.sqft > 0) {
-        const estimate = calculatePavingEstimate({
-            ...details,
-            areas: [{ square_feet: details.sqft, is_backyard: details.isBackyard }]
+      // Generate bulleted list for each option they asked for
+      if (details && details.line_items && details.line_items.length > 0) {
+        let hasValidEstimates = false;
+        let estimateText = `\n\nHere are the rough ballpark estimates based on your details:\n`;
+
+        details.line_items.forEach(item => {
+          if (item.sqft > 0) {
+            hasValidEstimates = true;
+            const estimate = calculatePavingEstimate({
+                project_type: item.project_type,
+                areas: [{ square_feet: item.sqft, is_backyard: item.is_backyard }],
+                access_level: details.access_level,
+                material_code: item.material_code,
+                city_town: details.city_town,
+                is_out_of_town: details.is_out_of_town
+            });
+            estimateText += `\n- **${item.title || item.project_type}** (approx ${item.sqft} sqft): $${estimate.low.toLocaleString()} - $${estimate.high.toLocaleString()} CAD`;
+          }
         });
-        
-        reply += `\n\nBased on your details (approx ${details.sqft} sqft ${details.project_type || 'project'}), a rough ballpark estimate is between **$${estimate.low.toLocaleString()} and $${estimate.high.toLocaleString()} CAD**. \n\n*Please note this is just a rough guess based on averages!*`;
+
+        if (hasValidEstimates) {
+          reply += estimateText + `\n\n*Please note these are just rough guesses based on averages!*`;
+        }
       }
     }
 
@@ -131,24 +160,22 @@ app.post("/api/chat", async (req, res) => {
   }
 });
 
-// ===== INTERNAL ESTIMATOR (NOW WITH VISION & AUDIO) =====
+// ===== INTERNAL ESTIMATOR (NOW RETURNS ARRAY OF ITEMS) =====
 app.post("/api/internal-chat", async (req, res) => {
   try {
     const { messages, attachment } = req.body;
     let aiMessages = Array.isArray(messages) ? [...messages] : [];
 
-    // --- HANDLE ATTACHMENTS (AUDIO OR IMAGE) ---
     if (attachment) {
       if (attachment.type === 'audio') {
-        // 1. Download Audio to a temp file
         const tempFilePath = path.join(os.tmpdir(), `audio-${Date.now()}.m4a`);
-        const file = fs.createWriteStream(tempFilePath);
+        const fileStream = fs.createWriteStream(tempFilePath);
         
         await new Promise((resolve, reject) => {
           https.get(attachment.url, (response) => {
-            response.pipe(file);
-            file.on('finish', () => {
-              file.close(resolve);
+            response.pipe(fileStream);
+            fileStream.on('finish', () => {
+              fileStream.close(resolve);
             });
           }).on('error', (err) => {
             fs.unlink(tempFilePath, () => {});
@@ -156,37 +183,34 @@ app.post("/api/internal-chat", async (req, res) => {
           });
         });
 
-        // 2. Send to OpenAI Whisper
         const transcription = await client.audio.transcriptions.create({
           file: fs.createReadStream(tempFilePath),
           model: "whisper-1",
         });
         
-        fs.unlinkSync(tempFilePath); // Clean up temp file
+        fs.unlinkSync(tempFilePath);
 
-        // 3. Add transcript to the AI's context
         aiMessages.push({
           role: "user",
-          content: `Here is a transcript of my voice memo / meeting with the client: "${transcription.text}". Please extract all project details and summarize.`
+          content: `Here is a transcript of my voice memo / meeting with the client: "${transcription.text}". Please extract all project details and break them into line items.`
         });
         
       } else if (attachment.type === 'image') {
-        // 1. Format the last message to include the Vision Image URL
         const lastMessage = aiMessages.pop();
         aiMessages.push({
           role: "user",
           content: [
-            { type: "text", text: lastMessage?.content || "Please analyze this sketch/photo for project measurements and materials." },
+            { type: "text", text: lastMessage?.content || "Please analyze this sketch/photo for project measurements and materials, breaking them into separate line items if there are multiple." },
             { type: "image_url", image_url: { url: attachment.url } }
           ]
         });
       }
     }
 
-    // --- SYSTEM PROMPT ---
     const ISOLATED_INTERNAL_PROMPT = `
       You are Adam's internal estimating assistant. Talk to Adam to figure out the project scope.
       If Adam uploads an image or a voice transcript, analyze it carefully for square footage, materials, and client details (Name, Phone, Email, Address).
+      If multiple areas, options, or change orders are mentioned, BREAK THEM APART into separate line items.
       
       CRITICAL RULE: NEVER give a price, cost, or dollar estimate in your text reply. 
       The external UI handles all pricing.
@@ -194,13 +218,19 @@ app.post("/api/internal-chat", async (req, res) => {
       Return a STRICT JSON object:
       {
         "reply": "Your conversational reply to Adam confirming what you extracted.",
+        "line_items": [
+          {
+            "title": "e.g., Option 1: 12x15 Patio, OR Add Walkway",
+            "description": "Details about this specific item",
+            "sqft": number,
+            "project_type": "patio" | "walkway" | "driveway" | null,
+            "material_text": "paver name",
+            "is_backyard": boolean
+          }
+        ],
         "meta": {
-          "sqft": number,
-          "project_type": "patio" | "walkway" | "driveway" | null,
-          "is_backyard": boolean,
           "access_level": "easy" | "medium" | "difficult",
-          "material_text": "paver name",
-          "scope_summary": "A concise 2-3 sentence professional summary of the project scope."
+          "scope_summary": "A concise professional summary of the entire project scope."
         },
         "customer": {
           "name": "extracted name or empty",
@@ -212,25 +242,29 @@ app.post("/api/internal-chat", async (req, res) => {
     `;
 
     const completion = await client.chat.completions.create({
-      model: "gpt-4o-mini", // GPT-4o-mini supports Vision natively!
+      model: "gpt-4o-mini",
       response_format: { type: "json_object" },
       messages: [{ role: "system", content: ISOLATED_INTERNAL_PROMPT }, ...aiMessages],
       temperature: 0.2, 
     });
 
     const data = JSON.parse(completion.choices[0].message.content);
+    
+    // Process items
+    const processedItems = (data.line_items || []).map(item => ({
+      ...item,
+      sqft: Number(item.sqft) || 0,
+      material_code: inferMaterialCodeFromText(item.material_text || "")
+    }));
+
     const meta = {
-      sqft: Number(data.meta?.sqft) || 0,
-      project_type: data.meta?.project_type || 'patio',
-      isBackyard: !!data.meta?.is_backyard,
       access_level: data.meta?.access_level || "medium",
-      material_code: inferMaterialCodeFromText(data.meta?.material_text || ""),
       scope_summary: data.meta?.scope_summary || "", 
       city_town: "Winnipeg",
       is_out_of_town: false
     };
 
-    res.json({ reply: data.reply, meta: meta, customer: data.customer || {} });
+    res.json({ reply: data.reply, line_items: processedItems, meta: meta, customer: data.customer || {} });
   } catch (err) {
     console.error("Internal Chat Error:", err);
     res.status(500).json({ error: "Server error" });
@@ -277,7 +311,6 @@ ${JSON.stringify(req.body, null, 2)}`
 
     await transporter.sendMail(mailOptions);
     res.json({ success: true, message: "Email sent successfully!" });
-
   } catch (err) {
     console.error("Email Error:", err);
     res.status(500).json({ error: "Failed to send email." });
