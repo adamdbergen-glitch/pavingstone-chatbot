@@ -5,7 +5,10 @@ const express = require("express");
 const cors = require("cors");
 const OpenAI = require("openai");
 const nodemailer = require("nodemailer");
-const https = require("https"); // <--- ADDED HTTPS MODULE HERE
+const https = require("https");
+const fs = require("fs");       // NEW: For handling audio files
+const os = require("os");       // NEW: For temporary audio files
+const path = require("path");   // NEW: For file paths
 const {
   calculatePavingEstimate,
   inferMaterialCodeFromText,
@@ -14,7 +17,6 @@ const {
 
 const app = express();
 
-// 1. ROBUST CORS SETUP
 const corsOptions = {
   origin: true, 
   methods: ["GET", "POST", "OPTIONS"],
@@ -23,13 +25,10 @@ const corsOptions = {
 
 app.use(cors(corsOptions));
 app.options("*", cors(corsOptions));
-
-// 2. SAFETY: Limit JSON payload size
-app.use(express.json({ limit: "1mb" }));
+app.use(express.json({ limit: "50mb" })); // Increased limit just in case of large payloads
 
 const client = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
 
-// Gmail email transporter
 const transporter = nodemailer.createTransport({
   host: process.env.SMTP_HOST || "smtp.gmail.com", 
   port: parseInt(process.env.SMTP_PORT || "587", 10), 
@@ -56,7 +55,6 @@ If the user asks off-topic questions, reply briefly that you are only here to he
 with paving stone / landscaping estimates.
 `;
 
-// ===== AI EXTRACTOR =====
 async function extractProjectDetailsAI(messages) {
   const safeMessages = Array.isArray(messages) ? messages : [];
   const extractionPrompt = `
@@ -133,20 +131,69 @@ app.post("/api/chat", async (req, res) => {
   }
 });
 
-// ===== INTERNAL ESTIMATOR / APP INTEGRATION =====
+// ===== INTERNAL ESTIMATOR (NOW WITH VISION & AUDIO) =====
 app.post("/api/internal-chat", async (req, res) => {
   try {
-    const messages = Array.isArray(req.body.messages) ? req.body.messages : [];
+    const { messages, attachment } = req.body;
+    let aiMessages = Array.isArray(messages) ? [...messages] : [];
 
+    // --- HANDLE ATTACHMENTS (AUDIO OR IMAGE) ---
+    if (attachment) {
+      if (attachment.type === 'audio') {
+        // 1. Download Audio to a temp file
+        const tempFilePath = path.join(os.tmpdir(), `audio-${Date.now()}.m4a`);
+        const file = fs.createWriteStream(tempFilePath);
+        
+        await new Promise((resolve, reject) => {
+          https.get(attachment.url, (response) => {
+            response.pipe(file);
+            file.on('finish', () => {
+              file.close(resolve);
+            });
+          }).on('error', (err) => {
+            fs.unlink(tempFilePath, () => {});
+            reject(err);
+          });
+        });
+
+        // 2. Send to OpenAI Whisper
+        const transcription = await client.audio.transcriptions.create({
+          file: fs.createReadStream(tempFilePath),
+          model: "whisper-1",
+        });
+        
+        fs.unlinkSync(tempFilePath); // Clean up temp file
+
+        // 3. Add transcript to the AI's context
+        aiMessages.push({
+          role: "user",
+          content: `Here is a transcript of my voice memo / meeting with the client: "${transcription.text}". Please extract all project details and summarize.`
+        });
+        
+      } else if (attachment.type === 'image') {
+        // 1. Format the last message to include the Vision Image URL
+        const lastMessage = aiMessages.pop();
+        aiMessages.push({
+          role: "user",
+          content: [
+            { type: "text", text: lastMessage?.content || "Please analyze this sketch/photo for project measurements and materials." },
+            { type: "image_url", image_url: { url: attachment.url } }
+          ]
+        });
+      }
+    }
+
+    // --- SYSTEM PROMPT ---
     const ISOLATED_INTERNAL_PROMPT = `
-      You are Adam's internal assistant. Talk to Adam to figure out the project scope.
+      You are Adam's internal estimating assistant. Talk to Adam to figure out the project scope.
+      If Adam uploads an image or a voice transcript, analyze it carefully for square footage, materials, and client details (Name, Phone, Email, Address).
       
       CRITICAL RULE: NEVER give a price, cost, or dollar estimate in your text reply. 
       The external UI handles all pricing.
       
       Return a STRICT JSON object:
       {
-        "reply": "Your conversational reply to Adam.",
+        "reply": "Your conversational reply to Adam confirming what you extracted.",
         "meta": {
           "sqft": number,
           "project_type": "patio" | "walkway" | "driveway" | null,
@@ -165,9 +212,9 @@ app.post("/api/internal-chat", async (req, res) => {
     `;
 
     const completion = await client.chat.completions.create({
-      model: "gpt-4o-mini",
+      model: "gpt-4o-mini", // GPT-4o-mini supports Vision natively!
       response_format: { type: "json_object" },
-      messages: [{ role: "system", content: ISOLATED_INTERNAL_PROMPT }, ...messages],
+      messages: [{ role: "system", content: ISOLATED_INTERNAL_PROMPT }, ...aiMessages],
       temperature: 0.2, 
     });
 
@@ -299,7 +346,7 @@ app.post("/api/send-followup", async (req, res) => {
   }
 });
 
-// ===== APPROVAL NOTIFICATION TO ADAM & CUSTOMER & ZAPIER =====
+// ===== APPROVAL NOTIFICATION & QUICKBOOKS WEBHOOK =====
 app.post("/api/approve-estimate", async (req, res) => {
   try {
     const { customerName, customerEmail, projectName, adminLink, contractUrl, portalLink, startDate, estimateAmount } = req.body;
