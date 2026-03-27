@@ -17,7 +17,6 @@ const {
 
 const app = express();
 
-// 1. ROBUST CORS SETUP
 const corsOptions = {
   origin: true, 
   methods: ["GET", "POST", "OPTIONS"],
@@ -30,7 +29,6 @@ app.use(express.json({ limit: "50mb" }));
 
 const client = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
 
-// Gmail email transporter
 const transporter = nodemailer.createTransport({
   host: process.env.SMTP_HOST || "smtp.gmail.com", 
   port: parseInt(process.env.SMTP_PORT || "587", 10), 
@@ -58,7 +56,7 @@ If the user asks off-topic questions, reply briefly that you are only here to he
 with paving stone / landscaping estimates.
 `;
 
-// ===== AI EXTRACTOR (NOW SUPPORTS ARRAYS OF LINE ITEMS) =====
+// ===== AI EXTRACTOR =====
 async function extractProjectDetailsAI(messages) {
   const safeMessages = Array.isArray(messages) ? messages : [];
   const extractionPrompt = `
@@ -90,7 +88,6 @@ async function extractProjectDetailsAI(messages) {
     });
     const data = JSON.parse(completion.choices[0].message.content);
 
-    // Process materials for each line item
     const processedItems = (data.line_items || []).map(item => ({
       ...item,
       sqft: Number(item.sqft) || 0,
@@ -123,11 +120,9 @@ app.post("/api/chat", async (req, res) => {
     let reply = completion.choices[0].message.content;
     const recentText = (reply + " " + (messages[messages.length - 1]?.content || "")).toLowerCase();
     
-    // Check if they want an estimate
     if (recentText.includes("estimate") || recentText.includes("cost") || recentText.includes("price") || recentText.includes("ballpark")) {
       const details = await extractProjectDetailsAI(messages);
       
-      // Generate bulleted list for each option they asked for
       if (details && details.line_items && details.line_items.length > 0) {
         let hasValidEstimates = false;
         let estimateText = `\n\nHere are the rough ballpark estimates based on your details:\n`;
@@ -160,7 +155,7 @@ app.post("/api/chat", async (req, res) => {
   }
 });
 
-// ===== INTERNAL ESTIMATOR (NOW RETURNS ARRAY OF ITEMS) =====
+// ===== INTERNAL ESTIMATOR =====
 app.post("/api/internal-chat", async (req, res) => {
   try {
     const { messages, attachment } = req.body;
@@ -230,7 +225,7 @@ app.post("/api/internal-chat", async (req, res) => {
         ],
         "meta": {
           "access_level": "easy" | "medium" | "difficult",
-          "scope_summary": "A concise professional summary of the entire project scope."
+          "scope_summary": "A detailed, step-by-step scope of work for the customer. Include a professional rundown of how the project will go (e.g., 1. Excavation and disposal of existing material, 2. Geotextile and A-base preparation, 3. Leveling and bedding sand, 4. Laying paving stones, 5. Polymeric sand installation and final compaction). Make it sound professional so the customer knows exactly what value is included in the price."
         },
         "customer": {
           "name": "extracted name or empty",
@@ -250,7 +245,6 @@ app.post("/api/internal-chat", async (req, res) => {
 
     const data = JSON.parse(completion.choices[0].message.content);
     
-    // Process items
     const processedItems = (data.line_items || []).map(item => ({
       ...item,
       sqft: Number(item.sqft) || 0,
@@ -329,12 +323,12 @@ app.post("/api/send-estimate", async (req, res) => {
       html: `
         <div style="font-family: sans-serif; max-width: 600px; margin: 0 auto; padding: 20px; border: 1px solid #e2e8f0; border-radius: 10px;">
           <h2 style="color: #0f172a;">Hi ${customerName},</h2>
-          <p style="color: #475569; font-size: 16px;">Thank you for considering The Paving Stone Pros! We've put together a ballpark estimate for your project: <strong>${projectName}</strong>.</p>
+          <p style="color: #475569; font-size: 16px;">Thank you for considering The Paving Stone Pros! We've put together an itemized estimate for your project: <strong>${projectName}</strong>.</p>
           <div style="background-color: #f8fafc; padding: 15px; border-radius: 8px; margin: 20px 0;">
-            <p style="margin: 0; color: #64748b; text-transform: uppercase; font-size: 12px; font-weight: bold;">Estimated Cost</p>
+            <p style="margin: 0; color: #64748b; text-transform: uppercase; font-size: 12px; font-weight: bold;">Estimated Cost (Subtotal)</p>
             <p style="margin: 5px 0 0 0; font-size: 24px; font-weight: 900; color: #0f172a;">$${Number(estimateAmount).toLocaleString()}</p>
           </div>
-          <p style="color: #475569; font-size: 16px;">You can view full details, message our crew, and <strong>Approve the Project</strong> directly in your secure client portal:</p>
+          <p style="color: #475569; font-size: 16px;">You can view the full itemized breakdown, step-by-step scope of work, and <strong>Approve the Project</strong> directly in your secure client portal:</p>
           <a href="${portalLink}" style="display: inline-block; padding: 12px 24px; background-color: #f59e0b; color: #1e293b; text-decoration: none; font-weight: bold; border-radius: 8px; margin-top: 10px;">View & Approve Estimate</a>
           <p style="color: #475569; margin-top: 30px;">Looking forward to working with you!</p>
           <p style="color: #94a3b8; font-size: 14px;">- The Paving Stone Pros</p>
@@ -382,7 +376,7 @@ app.post("/api/send-followup", async (req, res) => {
 // ===== APPROVAL NOTIFICATION & QUICKBOOKS WEBHOOK =====
 app.post("/api/approve-estimate", async (req, res) => {
   try {
-    const { customerName, customerEmail, projectName, adminLink, contractUrl, portalLink, startDate, estimateAmount } = req.body;
+    const { customerName, customerEmail, projectName, adminLink, contractUrl, portalLink, startDate, subtotal, gst, grandTotal } = req.body;
 
     // 1. Email Adam
     const mailOptionsAdmin = {
@@ -393,6 +387,11 @@ app.post("/api/approve-estimate", async (req, res) => {
         <div style="font-family: sans-serif; max-width: 600px; padding: 20px; border: 2px solid #10b981; border-radius: 10px; background-color: #ecfdf5;">
           <h2 style="color: #065f46; margin-top: 0;">Good news!</h2>
           <p style="color: #065f46; font-size: 16px;"><strong>${customerName}</strong> has officially approved the estimate and signed the contract for <strong>${projectName}</strong>.</p>
+          <div style="background-color: #fff; padding: 15px; border-radius: 8px; margin: 20px 0; border: 1px solid #d1fae5;">
+            <p style="margin: 0; color: #065f46; font-size: 14px;">Subtotal: $${Number(subtotal).toLocaleString(undefined, {minimumFractionDigits: 2})}</p>
+            <p style="margin: 5px 0 0 0; color: #065f46; font-size: 14px;">GST (5%): $${Number(gst).toLocaleString(undefined, {minimumFractionDigits: 2})}</p>
+            <p style="margin: 10px 0 0 0; font-size: 20px; font-weight: 900; color: #064e3b;">Total: $${Number(grandTotal).toLocaleString(undefined, {minimumFractionDigits: 2})}</p>
+          </div>
           <p style="color: #065f46; font-size: 16px;">It has been automatically scheduled for: <strong>${startDate}</strong></p>
           <a href="${adminLink}" style="display: inline-block; padding: 12px 24px; background-color: #10b981; color: #fff; text-decoration: none; font-weight: bold; border-radius: 8px; margin-top: 15px;">View Project Dashboard</a>
           <p style="margin-top: 15px;"><a href="${contractUrl}" style="color: #047857;">View Signed Contract</a></p>
@@ -410,6 +409,13 @@ app.post("/api/approve-estimate", async (req, res) => {
           <h2 style="color: #0f172a; margin-top: 0;">Thank you, ${customerName}!</h2>
           <p style="color: #475569; font-size: 16px;">Your project (<strong>${projectName}</strong>) is officially approved and your contract has been signed.</p>
           
+          <div style="background-color: #f8fafc; padding: 15px; border-radius: 8px; margin: 20px 0; border: 1px solid #e2e8f0;">
+            <p style="margin: 0; color: #64748b; font-size: 14px;">Subtotal: $${Number(subtotal).toLocaleString(undefined, {minimumFractionDigits: 2})}</p>
+            <p style="margin: 5px 0 0 0; color: #64748b; font-size: 14px;">GST (5%): $${Number(gst).toLocaleString(undefined, {minimumFractionDigits: 2})}</p>
+            <p style="margin: 15px 0 0 0; color: #64748b; text-transform: uppercase; font-size: 12px; font-weight: bold;">Approved Total</p>
+            <p style="margin: 5px 0 0 0; font-size: 24px; font-weight: 900; color: #0f172a;">$${Number(grandTotal).toLocaleString(undefined, {minimumFractionDigits: 2})}</p>
+          </div>
+
           <div style="background-color: #f8fafc; padding: 15px; border-radius: 8px; margin: 20px 0; border: 1px solid #e2e8f0;">
             <p style="margin: 0; color: #64748b; text-transform: uppercase; font-size: 12px; font-weight: bold;">Projected Start Date</p>
             <p style="margin: 5px 0 0 0; font-size: 20px; font-weight: 900; color: #0f172a;">${startDate}</p>
@@ -435,8 +441,10 @@ app.post("/api/approve-estimate", async (req, res) => {
           customerName: customerName,
           customerEmail: customerEmail || "no-email@provided.com",
           projectName: projectName,
-          estimateAmount: estimateAmount,
-          depositAmount: 500, // Hardcoded standard deposit
+          estimateAmount: subtotal, // Send subtotal to quickbooks (Quickbooks usually adds tax)
+          taxAmount: gst,
+          totalAmount: grandTotal,
+          depositAmount: 500,
           contractUrl: contractUrl,
           status: "Approved",
           dateApproved: new Date().toISOString()
