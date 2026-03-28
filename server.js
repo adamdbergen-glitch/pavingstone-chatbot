@@ -225,7 +225,7 @@ app.post("/api/internal-chat", async (req, res) => {
         ],
         "meta": {
           "access_level": "easy" | "medium" | "difficult",
-          "scope_summary": "A detailed, step-by-step scope of work for the customer. Include a professional rundown of how the project will go (e.g., 1. Excavation and disposal of existing material, 2. Geotextile and A-base preparation, 3. Leveling and bedding sand, 4. Laying paving stones, 5. Polymeric sand installation and final compaction). Make it sound professional so the customer knows exactly what value is included in the price."
+          "scope_summary": "First, write a warm, personalized 2-sentence blurb about how excited we are to build their specific project. Then, skip a line and provide a neat, bulleted step-by-step scope of work (e.g., • Excavation and disposal • Geotextile and A-base preparation • Laying paving stones) so they know exactly what the price entails and the professional value they are getting."
         },
         "customer": {
           "name": "extracted name or empty",
