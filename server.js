@@ -225,7 +225,7 @@ app.post("/api/internal-chat", async (req, res) => {
         ],
         "meta": {
           "access_level": "easy" | "medium" | "difficult",
-          "scope_summary": "First, write a warm, personalized 2-sentence blurb about how excited we are to build their specific project. Then, skip a line and provide a neat, bulleted step-by-step scope of work (e.g., • Excavation and disposal • Geotextile and A-base preparation • Laying paving stones) so they know exactly what the price entails and the professional value they are getting."
+          "scope_summary": "WRITE THIS SECTION DIRECTLY TO THE CUSTOMER (Use 'you' and 'your'). First, write a warm, professional 2-3 sentence blurb thanking them for the opportunity and expressing excitement about transforming their space. Then, provide a detailed, bulleted 6 to 8 step scope of work for EACH major line item/area. You MUST explicitly state that we use a '3/4 down limestone base compacted to ICPI standards' to survive Manitoba freeze-thaw cycles, and you MUST explicitly state that we sweep in 'polymeric sand' as the jointing material on all projects for a pristine, weed-free finish. Example steps: 1. Excavation and disposal. 2. Geotextile fabric installation. 3. 3/4 down limestone base installation and compaction. 4. Bedding sand grading. 5. Precision installation of paving stones. 6. Securing the perimeter with edge restraints. 7. Polymeric sand jointing and final compaction. 8. Site cleanup."
         },
         "customer": {
           "name": "extracted name or empty",
