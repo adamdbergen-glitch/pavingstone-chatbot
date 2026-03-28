@@ -155,10 +155,10 @@ app.post("/api/chat", async (req, res) => {
   }
 });
 
-// ===== INTERNAL ESTIMATOR =====
+// ===== INTERNAL ESTIMATOR (NOW STATEFUL) =====
 app.post("/api/internal-chat", async (req, res) => {
   try {
-    const { messages, attachment } = req.body;
+    const { messages, attachment, currentState } = req.body;
     let aiMessages = Array.isArray(messages) ? [...messages] : [];
 
     if (attachment) {
@@ -202,17 +202,28 @@ app.post("/api/internal-chat", async (req, res) => {
       }
     }
 
+    // STATEFUL PROMPT
     const ISOLATED_INTERNAL_PROMPT = `
       You are Adam's internal estimating assistant. Talk to Adam to figure out the project scope.
-      If Adam uploads an image or a voice transcript, analyze it carefully for square footage, materials, and client details (Name, Phone, Email, Address).
-      If multiple areas, options, or change orders are mentioned, BREAK THEM APART into separate line items.
+      
+      You are maintaining a RUNNING STATE of the quote. Here is what you have extracted so far:
+      --- CURRENT QUOTE STATE ---
+      ${JSON.stringify(currentState || {}, null, 2)}
+      ---------------------------
+      
+      INSTRUCTIONS:
+      1. Read the conversation history and any new image/voice transcripts carefully.
+      2. UPDATE the Current Quote State with any new information, measurements, corrections, or added/removed line items.
+      3. If Adam adds a new area (e.g., "add a walkway"), ADD it to the line_items array.
+      4. If Adam corrects a size (e.g., "the patio is actually 500 sqft"), UPDATE the existing line item.
+      5. RETAIN all previously extracted customer details and line items unless Adam explicitly changes or removes them!
       
       CRITICAL RULE: NEVER give a price, cost, or dollar estimate in your text reply. 
       The external UI handles all pricing.
       
-      Return a STRICT JSON object:
+      Return a STRICT JSON object in this exact format:
       {
-        "reply": "Your conversational reply to Adam confirming what you extracted.",
+        "reply": "Your conversational reply to Adam confirming what you updated.",
         "line_items": [
           {
             "title": "e.g., Option 1: 12x15 Patio, OR Add Walkway",
