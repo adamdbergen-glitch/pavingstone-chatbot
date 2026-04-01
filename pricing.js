@@ -8,28 +8,28 @@ const MIN_JOB = 2500;
 
 // Cost for gravel, sand, edge restraints, and disposal per sq ft.
 // In Winnipeg, 6" of base + bedding sand + disposal is approx $4-$6/sqft cost.
-const BASE_PREP_COST = 0.00; 
+const BASE_PREP_COST = 0.00;
 
 const MATERIALS = {
   // Barkman – budget
-  barkman_holland:              { basePerSqft: 6.18, tier: "budget" },
-  barkman_broadway_65:          { basePerSqft: 7.27, tier: "budget" },
-  barkman_brookside_slab:       { basePerSqft: 6.95, tier: "budget" },
-  barkman_terrace_slab:         { basePerSqft: 4.36, tier: "budget" },
-  barkman_diamond_face_24x24:   { basePerSqft: 3.96, tier: "budget" },
+  barkman_holland:              { basePerSqft: 6.42, tier: "budget" }, 
+  barkman_broadway_65:          { basePerSqft: 7.55, tier: "budget" }, 
+  barkman_brookside_slab:       { basePerSqft: 7.23, tier: "budget" }, 
+  barkman_terrace_slab:         { basePerSqft: 5.07, tier: "budget" }, 
+  barkman_diamond_face_24x24:   { basePerSqft: 4.12, tier: "budget" }, 
 
   // Barkman – midrange
-  barkman_verano:               { basePerSqft: 7.51, tier: "midrange" },
-  barkman_roman:                { basePerSqft: 8.20, tier: "midrange" },
-  barkman_navarro:              { basePerSqft: 8.76, tier: "midrange" },
-  barkman_lexington_slab:       { basePerSqft: 8.04, tier: "midrange" },
+  barkman_verano:               { basePerSqft: 7.44, tier: "midrange" }, 
+  barkman_roman:                { basePerSqft: 8.53, tier: "midrange" }, 
+  barkman_navarro:              { basePerSqft: 8.56, tier: "midrange" }, 
+  barkman_lexington_slab:       { basePerSqft: 8.35, tier: "midrange" }, 
 
   // Barkman – premium
-  barkman_fjord:                { basePerSqft: 12.88, tier: "premium" },
-  barkman_broadway_100:         { basePerSqft: 11.52, tier: "premium" },
-  barkman_arborwood:            { basePerSqft: 11.82, tier: "premium" },
+  barkman_fjord:                { basePerSqft: 13.39, tier: "premium" }, 
+  barkman_broadway_100:         { basePerSqft: 11.97, tier: "premium" }, 
+  barkman_arborwood:            { basePerSqft: 11.82, tier: "premium" }, 
 
-  // Belgard / Techo
+  // Belgard / Techo (Retained original pricing)
   belgard_holland:              { basePerSqft: 4.78, tier: "budget" },
   belgard_dimensions:           { basePerSqft: 5.73, tier: "midrange" },
   techo_blu_60_slate:           { basePerSqft: 7.94, tier: "midrange" },
@@ -50,7 +50,7 @@ function getMaterialTierDescription(code) {
 function getMaterialPricePerSqft(code) {
   const mat = MATERIALS[code];
   // Default to Holland price if code not found
-  const base = mat ? mat.basePerSqft : 6.18; 
+  const base = mat ? mat.basePerSqft : 6.42; 
   return base * PAVER_MARKUP;
 }
 
@@ -120,6 +120,55 @@ function calculatePavingEstimate({
   };
 }
 
+// --- NEW RE-LEVELING LOGIC ---
+
+const RELEVEL_TIERS = {
+  small:    { max: 150, rate: 16.50 },
+  standard: { max: 450, rate: 12.50 },
+  large:    { max: 900, rate: 10.50 },
+  volume:   { max: Infinity, rate: 9.00 }
+};
+
+function getRelevelBaseRate(totalSqft) {
+  if (totalSqft < RELEVEL_TIERS.small.max) return RELEVEL_TIERS.small.rate;
+  if (totalSqft < RELEVEL_TIERS.standard.max) return RELEVEL_TIERS.standard.rate;
+  if (totalSqft < RELEVEL_TIERS.large.max) return RELEVEL_TIERS.large.rate;
+  return RELEVEL_TIERS.volume.rate;
+}
+
+function calculateRelevelEstimate({
+  areas,
+  needsEdging,
+  isPoorCondition,
+  isOutOfTown
+}) {
+  const totalSqft = (areas || []).reduce((sum, a) => sum + (a.square_feet || 0), 0);
+  let rate = getRelevelBaseRate(totalSqft);
+
+  // Additive modifiers 
+  if (needsEdging) rate += 1.50;      // New edging and spikes
+  if (isPoorCondition) rate += 3.00;  // Base failure reset
+  if (isOutOfTown) rate += 1.00;      // Travel premium
+
+  let subtotal = rate * totalSqft;
+
+  // Enforce existing minimum job price
+  if (subtotal < MIN_JOB) {
+    subtotal = MIN_JOB;
+  }
+
+  const cushioned = subtotal * CHATBOT_CUSHION;
+  const low = Math.round(cushioned * 0.95);
+  const high = Math.round(cushioned * 1.05);
+
+  return {
+    currency: "CAD",
+    low,
+    high,
+    details: `Re-leveling ${Math.round(totalSqft)} sqft. Est: $${(cushioned / totalSqft).toFixed(2)}/sqft avg.`,
+  };
+}
+
 function inferMaterialCodeFromText(text) {
   const t = (text || "").toLowerCase();
   
@@ -140,6 +189,7 @@ function inferMaterialCodeFromText(text) {
 
 module.exports = {
   calculatePavingEstimate,
+  calculateRelevelEstimate,
   inferMaterialCodeFromText,
   getMaterialTierDescription,
 };
