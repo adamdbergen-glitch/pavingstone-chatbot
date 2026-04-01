@@ -6,11 +6,12 @@ const cors = require("cors");
 const OpenAI = require("openai");
 const nodemailer = require("nodemailer");
 const https = require("https");
-const fs = require("fs");       
-const os = require("os");       
-const path = require("path");   
+const fs = require("fs");        
+const os = require("os");        
+const path = require("path");    
 const {
   calculatePavingEstimate,
+  calculateRelevelEstimate, // <-- 1. ADDED THE NEW IMPORT HERE
   inferMaterialCodeFromText,
   getMaterialTierDescription,
 } = require("./pricing");
@@ -44,8 +45,9 @@ const SYSTEM_PROMPT = `
 You are the conversational estimating assistant for "The Paving Stone Pros" in Manitoba, Canada.
 
 Your ONLY job is to help homeowners describe their paving stone / hardscaping project.
-Once the key details (approximate square footage, project type, material) are known, ask if they want a ballpark estimate.
-If they ask for multiple options (like a patio AND a walkway, or two different sizes), acknowledge both!
+You handle new installations (patios, walkways, driveways) AND repair/re-leveling jobs.
+Once the key details (approximate square footage, project type, material, or repair condition) are known, ask if they want a ballpark estimate.
+If they ask for multiple options, acknowledge both!
 
 CRITICAL RULE: NEVER give a price, cost, dollar amount, or numerical estimate in your text reply. 
 The system will calculate the accurate math and append the price automatically behind the scenes.
@@ -62,15 +64,17 @@ async function extractProjectDetailsAI(messages) {
   const extractionPrompt = `
     You are a data extraction bot. 
     Analyze the conversation history below and extract the **current valid project details**.
-    If the user asks for multiple options (e.g. a 12x15 patio AND a 15x15 patio, or a patio AND a walkway), break them out into separate line items.
+    If the user asks for multiple options, break them out into separate line items.
     
     Return JSON ONLY with these fields:
     - line_items (Array of objects, each containing):
-        - title (string, e.g. "12x15 Patio")
+        - title (string, e.g. "12x15 Patio" or "Driveway Re-level")
         - sqft (number)
-        - project_type (string: patio, walkway, driveway)
+        - project_type (string: patio, walkway, driveway, relevel)
         - is_backyard (boolean)
         - material_text (string)
+        - needs_edging (boolean - mainly for releveling)
+        - is_poor_condition (boolean - mainly for releveling if they say it's ruined/messy)
     - access_level (string)
     - city_town (string)
     - is_out_of_town (boolean)
@@ -91,7 +95,9 @@ async function extractProjectDetailsAI(messages) {
     const processedItems = (data.line_items || []).map(item => ({
       ...item,
       sqft: Number(item.sqft) || 0,
-      material_code: inferMaterialCodeFromText(item.material_text || "")
+      material_code: inferMaterialCodeFromText(item.material_text || ""),
+      needs_edging: !!item.needs_edging,
+      is_poor_condition: !!item.is_poor_condition
     }));
 
     return {
@@ -130,14 +136,27 @@ app.post("/api/chat", async (req, res) => {
         details.line_items.forEach(item => {
           if (item.sqft > 0) {
             hasValidEstimates = true;
-            const estimate = calculatePavingEstimate({
-                project_type: item.project_type,
-                areas: [{ square_feet: item.sqft, is_backyard: item.is_backyard }],
-                access_level: details.access_level,
-                material_code: item.material_code,
-                city_town: details.city_town,
-                is_out_of_town: details.is_out_of_town
-            });
+            let estimate;
+
+            // 2. THE FIX: Check if it's a relevel or an install!
+            if (item.project_type === "relevel") {
+               estimate = calculateRelevelEstimate({
+                 areas: [{ square_feet: item.sqft }],
+                 needsEdging: item.needs_edging,
+                 isPoorCondition: item.is_poor_condition,
+                 isOutOfTown: details.is_out_of_town
+               });
+            } else {
+               estimate = calculatePavingEstimate({
+                   project_type: item.project_type,
+                   areas: [{ square_feet: item.sqft, is_backyard: item.is_backyard }],
+                   access_level: details.access_level,
+                   material_code: item.material_code,
+                   city_town: details.city_town,
+                   is_out_of_town: details.is_out_of_town
+               });
+            }
+
             estimateText += `\n- **${item.title || item.project_type}** (approx ${item.sqft} sqft): $${estimate.low.toLocaleString()} - $${estimate.high.toLocaleString()} CAD`;
           }
         });
@@ -229,9 +248,11 @@ app.post("/api/internal-chat", async (req, res) => {
             "title": "e.g., Option 1: 12x15 Patio, OR Add Walkway",
             "description": "Details about this specific item",
             "sqft": number,
-            "project_type": "patio" | "walkway" | "driveway" | null,
+            "project_type": "patio" | "walkway" | "driveway" | "relevel" | null,
             "material_text": "paver name",
-            "is_backyard": boolean
+            "is_backyard": boolean,
+            "needs_edging": boolean,
+            "is_poor_condition": boolean
           }
         ],
         "meta": {
@@ -259,7 +280,9 @@ app.post("/api/internal-chat", async (req, res) => {
     const processedItems = (data.line_items || []).map(item => ({
       ...item,
       sqft: Number(item.sqft) || 0,
-      material_code: inferMaterialCodeFromText(item.material_text || "")
+      material_code: inferMaterialCodeFromText(item.material_text || ""),
+      needs_edging: !!item.needs_edging,
+      is_poor_condition: !!item.is_poor_condition
     }));
 
     const meta = {
