@@ -11,7 +11,7 @@ const os = require("os");
 const path = require("path");    
 const {
   calculatePavingEstimate,
-  calculateRelevelEstimate, // <-- 1. ADDED THE NEW IMPORT HERE
+  calculateRelevelEstimate, 
   inferMaterialCodeFromText,
   getMaterialTierDescription,
 } = require("./pricing");
@@ -85,7 +85,7 @@ async function extractProjectDetailsAI(messages) {
 
   try {
     const completion = await client.chat.completions.create({
-      model: "gpt-4o-mini",
+      model: "gpt-5.4-nano", // Super cheap, great for simple data extraction
       response_format: { type: "json_object" },
       messages: [{ role: "system", content: extractionPrompt }],
       temperature: 0.1, 
@@ -118,7 +118,7 @@ app.post("/api/chat", async (req, res) => {
     const messages = Array.isArray(req.body.messages) ? req.body.messages : [];
 
     const completion = await client.chat.completions.create({
-      model: "gpt-4o-mini",
+      model: "gpt-5.4-nano", // Fast and conversational, highly cost-effective
       messages: [{ role: "system", content: SYSTEM_PROMPT }, ...messages],
       temperature: 0.5, 
     });
@@ -138,7 +138,6 @@ app.post("/api/chat", async (req, res) => {
             hasValidEstimates = true;
             let estimate;
 
-            // 2. THE FIX: Check if it's a relevel or an install!
             if (item.project_type === "relevel") {
                estimate = calculateRelevelEstimate({
                  areas: [{ square_feet: item.sqft }],
@@ -200,6 +199,7 @@ app.post("/api/internal-chat", async (req, res) => {
         const transcription = await client.audio.transcriptions.create({
           file: fs.createReadStream(tempFilePath),
           model: "whisper-1",
+          prompt: "Paving stone project, hardscaping, patio, driveway, walkway, relevel, Barkman, Charcoal Holland, base, polymeric sand, sqft, measurements, edging."
         });
         
         fs.unlinkSync(tempFilePath);
@@ -268,11 +268,12 @@ app.post("/api/internal-chat", async (req, res) => {
       }
     `;
 
+    // THE BRAIN UPGRADE: Using the new 5.4-mini model
     const completion = await client.chat.completions.create({
-      model: "gpt-4o-mini",
+      model: "gpt-5.4-mini", 
       response_format: { type: "json_object" },
       messages: [{ role: "system", content: ISOLATED_INTERNAL_PROMPT }, ...aiMessages],
-      temperature: 0.2, 
+      temperature: 0.1, 
     });
 
     const data = JSON.parse(completion.choices[0].message.content);
@@ -475,7 +476,7 @@ app.post("/api/approve-estimate", async (req, res) => {
           customerName: customerName,
           customerEmail: customerEmail || "no-email@provided.com",
           projectName: projectName,
-          estimateAmount: subtotal, // Send subtotal to quickbooks (Quickbooks usually adds tax)
+          estimateAmount: subtotal, 
           taxAmount: gst,
           totalAmount: grandTotal,
           depositAmount: 500,
