@@ -195,10 +195,12 @@ app.post("/api/internal-chat", async (req, res) => {
           throw new Error("Could not download the audio file from the provided URL.");
         }
 
-        const transcription = await client.audio.transcriptions.create({
+       const transcription = await client.audio.transcriptions.create({
           file: fs.createReadStream(tempFilePath),
           model: "whisper-1",
-          prompt: "Paving stone project, hardscaping, patio, driveway, walkway, relevel, Barkman, Charcoal Holland, base, polymeric sand, sqft, measurements, edging."
+          language: "en",   // 1. Forcing English stops it from trying to translate background noise
+          temperature: 0.2, // 2. Adding a slight temperature breaks repetition loops
+          prompt: "Paving stone project, hardscaping, patio, driveway, walkway, relevel, Barkman, Charcoal Holland, sqft."
         });
         
         fs.unlinkSync(tempFilePath);
