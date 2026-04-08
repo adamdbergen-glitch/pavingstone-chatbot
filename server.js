@@ -85,7 +85,7 @@ async function extractProjectDetailsAI(messages) {
 
   try {
     const completion = await client.chat.completions.create({
-      model: "gpt-5.4-nano", // Keeping the ultra-cheap model for public chat
+      model: "gpt-5.4-nano", 
       response_format: { type: "json_object" },
       messages: [{ role: "system", content: extractionPrompt }],
       temperature: 0.1, 
@@ -116,6 +116,10 @@ async function extractProjectDetailsAI(messages) {
 app.post("/api/chat", async (req, res) => {
   try {
     const messages = Array.isArray(req.body.messages) ? req.body.messages : [];
+    
+    // NEW: LOGGING WHAT THE CUSTOMER SAID
+    const lastUserMsg = messages[messages.length - 1]?.content || "N/A";
+    console.log("👤 CUSTOMER SAID:", lastUserMsg);
 
     const completion = await client.chat.completions.create({
       model: "gpt-5.4-nano", 
@@ -124,7 +128,11 @@ app.post("/api/chat", async (req, res) => {
     });
 
     let reply = completion.choices[0].message.content;
-    const recentText = (reply + " " + (messages[messages.length - 1]?.content || "")).toLowerCase();
+    
+    // NEW: LOGGING WHAT THE BOT REPLIED
+    console.log("🤖 BOT REPLIED:", reply);
+
+    const recentText = (reply + " " + lastUserMsg).toLowerCase();
     
     if (recentText.includes("estimate") || recentText.includes("cost") || recentText.includes("price") || recentText.includes("ballpark")) {
       const details = await extractProjectDetailsAI(messages);
@@ -162,6 +170,9 @@ app.post("/api/chat", async (req, res) => {
 
         if (hasValidEstimates) {
           reply += estimateText + `\n\n*Please note these are just rough guesses based on averages!*`;
+          
+          // NEW: LOGGING THE CALCULATION
+          console.log("💰 BALLPARK GENERATED:", estimateText.trim());
         }
       }
     }
@@ -195,11 +206,11 @@ app.post("/api/internal-chat", async (req, res) => {
           throw new Error("Could not download the audio file from the provided URL.");
         }
 
-       const transcription = await client.audio.transcriptions.create({
+        const transcription = await client.audio.transcriptions.create({
           file: fs.createReadStream(tempFilePath),
           model: "whisper-1",
-          language: "en",   // 1. Forcing English stops it from trying to translate background noise
-          temperature: 0.2, // 2. Adding a slight temperature breaks repetition loops
+          language: "en",   // FIX: Prevents hallucination loops from background noise
+          temperature: 0.2, // FIX: Helps break repetition cycles
           prompt: "Paving stone project, hardscaping, patio, driveway, walkway, relevel, Barkman, Charcoal Holland, sqft."
         });
         
@@ -224,7 +235,6 @@ app.post("/api/internal-chat", async (req, res) => {
       }
     }
 
-    // THE FIX: Adding the JSON Scratchpad ("thinking_process") to help the Mini model
     const ISOLATED_INTERNAL_PROMPT = `
       You are Adam's internal estimating assistant. Talk to Adam to figure out the project scope.
       
@@ -273,15 +283,13 @@ app.post("/api/internal-chat", async (req, res) => {
     `;
 
     const completion = await client.chat.completions.create({
-      model: "gpt-5.4-mini", // Retaining the mini model as requested
+      model: "gpt-5.4-mini", 
       response_format: { type: "json_object" },
       messages: [{ role: "system", content: ISOLATED_INTERNAL_PROMPT }, ...aiMessages],
       temperature: 0.1, 
     });
 
     const data = JSON.parse(completion.choices[0].message.content);
-    
-    // Server logs the thinking process so you can see the AI's internal logic!
     console.log("🧠 AI SCRATCHPAD:", data.thinking_process);
     
     const processedItems = (data.line_items || []).map(item => ({
@@ -419,7 +427,6 @@ app.post("/api/approve-estimate", async (req, res) => {
   try {
     const { customerName, customerEmail, projectName, adminLink, contractUrl, portalLink, startDate, subtotal, gst, grandTotal } = req.body;
 
-    // 1. Email Adam
     const mailOptionsAdmin = {
       from: process.env.SMTP_USER,
       to: process.env.SMTP_USER,
@@ -440,7 +447,6 @@ app.post("/api/approve-estimate", async (req, res) => {
       `
     };
 
-    // 2. Email Customer Receipt
     const mailOptionsCustomer = {
       from: process.env.SMTP_USER,
       to: customerEmail, 
@@ -475,7 +481,6 @@ app.post("/api/approve-estimate", async (req, res) => {
     await transporter.sendMail(mailOptionsAdmin);
     if(customerEmail) await transporter.sendMail(mailOptionsCustomer);
 
-    // 3. SEND DATA TO ZAPIER/MAKE WEBHOOK FOR QUICKBOOKS
     if (process.env.ZAPIER_WEBHOOK_URL) {
       try {
         const payload = JSON.stringify({
