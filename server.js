@@ -85,7 +85,7 @@ async function extractProjectDetailsAI(messages) {
 
   try {
     const completion = await client.chat.completions.create({
-      model: "gpt-5.4-nano", // Super cheap, great for simple data extraction
+      model: "gpt-5.4-nano", // Keeping the ultra-cheap model for public chat
       response_format: { type: "json_object" },
       messages: [{ role: "system", content: extractionPrompt }],
       temperature: 0.1, 
@@ -118,7 +118,7 @@ app.post("/api/chat", async (req, res) => {
     const messages = Array.isArray(req.body.messages) ? req.body.messages : [];
 
     const completion = await client.chat.completions.create({
-      model: "gpt-5.4-nano", // Fast and conversational, highly cost-effective
+      model: "gpt-5.4-nano", 
       messages: [{ role: "system", content: SYSTEM_PROMPT }, ...messages],
       temperature: 0.5, 
     });
@@ -182,19 +182,18 @@ app.post("/api/internal-chat", async (req, res) => {
     if (attachment) {
       if (attachment.type === 'audio') {
         const tempFilePath = path.join(os.tmpdir(), `audio-${Date.now()}.m4a`);
-        const fileStream = fs.createWriteStream(tempFilePath);
         
-        await new Promise((resolve, reject) => {
-          https.get(attachment.url, (response) => {
-            response.pipe(fileStream);
-            fileStream.on('finish', () => {
-              fileStream.close(resolve);
-            });
-          }).on('error', (err) => {
-            fs.unlink(tempFilePath, () => {});
-            reject(err);
-          });
-        });
+        try {
+          const fileResponse = await fetch(attachment.url);
+          if (!fileResponse.ok) throw new Error(`Failed to download audio: ${fileResponse.statusText}`);
+          
+          const arrayBuffer = await fileResponse.arrayBuffer();
+          const buffer = Buffer.from(arrayBuffer);
+          fs.writeFileSync(tempFilePath, buffer);
+        } catch (downloadErr) {
+          console.error("Audio Download Error:", downloadErr);
+          throw new Error("Could not download the audio file from the provided URL.");
+        }
 
         const transcription = await client.audio.transcriptions.create({
           file: fs.createReadStream(tempFilePath),
@@ -203,6 +202,8 @@ app.post("/api/internal-chat", async (req, res) => {
         });
         
         fs.unlinkSync(tempFilePath);
+
+        console.log("🎙️ WHISPER HEARD:", transcription.text);
 
         aiMessages.push({
           role: "user",
@@ -221,7 +222,7 @@ app.post("/api/internal-chat", async (req, res) => {
       }
     }
 
-    // STATEFUL PROMPT
+    // THE FIX: Adding the JSON Scratchpad ("thinking_process") to help the Mini model
     const ISOLATED_INTERNAL_PROMPT = `
       You are Adam's internal estimating assistant. Talk to Adam to figure out the project scope.
       
@@ -240,8 +241,9 @@ app.post("/api/internal-chat", async (req, res) => {
       CRITICAL RULE: NEVER give a price, cost, or dollar estimate in your text reply. 
       The external UI handles all pricing.
       
-      Return a STRICT JSON object in this exact format:
+      Return a STRICT JSON object in this exact format. YOU MUST FILL OUT 'thinking_process' FIRST:
       {
+        "thinking_process": "Briefly write down the measurements, material names, and client details you found in the transcript, and explain how you will update the Current Quote State.",
         "reply": "Your conversational reply to Adam confirming what you updated.",
         "line_items": [
           {
@@ -268,15 +270,17 @@ app.post("/api/internal-chat", async (req, res) => {
       }
     `;
 
-    // THE BRAIN UPGRADE: Using the new 5.4-mini model
     const completion = await client.chat.completions.create({
-      model: "gpt-5.4-mini", 
+      model: "gpt-5.4-mini", // Retaining the mini model as requested
       response_format: { type: "json_object" },
       messages: [{ role: "system", content: ISOLATED_INTERNAL_PROMPT }, ...aiMessages],
       temperature: 0.1, 
     });
 
     const data = JSON.parse(completion.choices[0].message.content);
+    
+    // Server logs the thinking process so you can see the AI's internal logic!
+    console.log("🧠 AI SCRATCHPAD:", data.thinking_process);
     
     const processedItems = (data.line_items || []).map(item => ({
       ...item,
