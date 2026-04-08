@@ -249,6 +249,7 @@ app.post("/api/internal-chat", async (req, res) => {
       3. If Adam adds a new area (e.g., "add a walkway"), ADD it to the line_items array.
       4. If Adam corrects a size (e.g., "the patio is actually 500 sqft"), UPDATE the existing line item.
       5. RETAIN all previously extracted customer details and line items unless Adam explicitly changes or removes them!
+      6. IF Adam mentions custom features (e.g. fire pits, retaining walls, steps, sod, lighting), ALWAYS ADD THEM to the line_items array, but set project_type to "other" and sqft to 0.
       
       CRITICAL RULE: NEVER give a price, cost, or dollar estimate in your text reply. 
       The external UI handles all pricing.
@@ -262,7 +263,7 @@ app.post("/api/internal-chat", async (req, res) => {
             "title": "e.g., Option 1: 12x15 Patio, OR Add Walkway",
             "description": "Details about this specific item",
             "sqft": number,
-            "project_type": "patio" | "walkway" | "driveway" | "relevel" | null,
+            "project_type": "patio" | "walkway" | "driveway" | "relevel" | "other" | null,
             "material_text": "paver name",
             "is_backyard": boolean,
             "needs_edging": boolean,
