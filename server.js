@@ -364,16 +364,23 @@ ${JSON.stringify(req.body, null, 2)}`
 // ===== SEND ESTIMATE TO CUSTOMER =====
 app.post("/api/send-estimate", async (req, res) => {
   try {
-    const { customerEmail, customerName, projectName, estimateAmount, portalLink } = req.body;
+    // NEW: We now accept customSubject and customMessage from the frontend
+    const { customerEmail, customerName, projectName, estimateAmount, portalLink, customSubject, customMessage } = req.body;
 
     const mailOptions = {
       from: process.env.SMTP_USER,
       to: customerEmail,
-      subject: `Your Project Estimate: ${projectName}`,
+      subject: customSubject || `Your Project Estimate: ${projectName}`,
       html: `
         <div style="font-family: sans-serif; max-width: 600px; margin: 0 auto; padding: 20px; border: 1px solid #e2e8f0; border-radius: 10px;">
           <h2 style="color: #0f172a;">Hi ${customerName},</h2>
           <p style="color: #475569; font-size: 16px;">Thank you for considering The Paving Stone Pros! We've put together an itemized estimate for your project: <strong>${projectName}</strong>.</p>
+          
+          ${customMessage ? `
+          <div style="background-color: #fffbeb; border-left: 4px solid #f59e0b; padding: 15px; margin: 20px 0; color: #475569; font-size: 15px; white-space: pre-wrap;">
+${customMessage}
+          </div>` : ''}
+
           <div style="background-color: #f8fafc; padding: 15px; border-radius: 8px; margin: 20px 0;">
             <p style="margin: 0; color: #64748b; text-transform: uppercase; font-size: 12px; font-weight: bold;">Estimated Cost (Subtotal)</p>
             <p style="margin: 5px 0 0 0; font-size: 24px; font-weight: 900; color: #0f172a;">$${Number(estimateAmount).toLocaleString()}</p>
@@ -393,7 +400,6 @@ app.post("/api/send-estimate", async (req, res) => {
     res.status(500).json({ error: "Failed to send estimate." });
   }
 });
-
 // ===== SEND FOLLOW-UP EMAIL =====
 app.post("/api/send-followup", async (req, res) => {
   try {
