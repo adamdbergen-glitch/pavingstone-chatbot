@@ -318,17 +318,25 @@ app.post("/api/internal-chat", async (req, res) => {
 // ===== EMAIL LEAD ROUTE =====
 app.post("/api/lead", async (req, res) => {
   try {
-    const name = req.body.name || req.body.fullName || req.body.customerName || req.body.Name;
-    const email = req.body.email || req.body.emailAddress || req.body.Email;
-    const phone = req.body.phone || req.body.phoneNumber || req.body.Phone;
-    const message = req.body.message || req.body.details || req.body.Message;
+    // NEW: Check for nested contact object in case payload matches the raw data dump
+    const contactInfo = req.body.contact || {};
+
+    // NEW: Attempt to pull details from root body OR the nested contactInfo object
+    const name = req.body.name || req.body.fullName || req.body.customerName || req.body.Name || contactInfo.name;
+    const email = req.body.email || req.body.emailAddress || req.body.Email || contactInfo.email;
+    const phone = req.body.phone || req.body.phoneNumber || req.body.Phone || contactInfo.phone;
+    const message = req.body.message || req.body.details || req.body.Message || contactInfo.message;
     
     const chatHistory = req.body.messages || req.body.transcript || req.body.history;
+    
+    // NEW: Gracefully handle completely empty arrays / missing transcripts
     let formattedTranscript = "No transcript provided.";
-    if (Array.isArray(chatHistory)) {
+    if (Array.isArray(chatHistory) && chatHistory.length > 0) {
       formattedTranscript = chatHistory.map(m => `${m.role === 'user' ? 'CUSTOMER' : 'BOT'}: ${m.content}`).join('\n\n');
-    } else if (typeof chatHistory === 'string') {
+    } else if (typeof chatHistory === 'string' && chatHistory.trim() !== '') {
       formattedTranscript = chatHistory;
+    } else if (Array.isArray(chatHistory) && chatHistory.length === 0) {
+      formattedTranscript = "Transcript array was completely empty upon submission.";
     }
 
     const mailOptions = {
