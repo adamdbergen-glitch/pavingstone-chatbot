@@ -9,6 +9,8 @@ const https = require("https");
 const fs = require("fs");        
 const os = require("os");        
 const path = require("path");    
+// NEW: Import Supabase to bypass RLS securely from the backend
+const { createClient } = require('@supabase/supabase-js');
 const {
   calculatePavingEstimate,
   calculateRelevelEstimate, 
@@ -29,6 +31,12 @@ app.options("*", cors(corsOptions));
 app.use(express.json({ limit: "50mb" })); 
 
 const client = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
+
+// NEW: Initialize Supabase Admin Client using Service Role Key
+const supabaseAdmin = createClient(
+  process.env.SUPABASE_URL,
+  process.env.SUPABASE_SERVICE_ROLE_KEY
+);
 
 const transporter = nodemailer.createTransport({
   host: process.env.SMTP_HOST || "smtp.gmail.com", 
@@ -209,8 +217,8 @@ app.post("/api/internal-chat", async (req, res) => {
         const transcription = await client.audio.transcriptions.create({
           file: fs.createReadStream(tempFilePath),
           model: "whisper-1",
-          language: "en",   // FIX: Prevents hallucination loops from background noise
-          temperature: 0.2, // FIX: Helps break repetition cycles
+          language: "en",   
+          temperature: 0.2, 
           prompt: "Paving stone project, hardscaping, patio, driveway, walkway, relevel, Barkman, Charcoal Holland, sqft."
         });
         
@@ -318,10 +326,8 @@ app.post("/api/internal-chat", async (req, res) => {
 // ===== EMAIL LEAD ROUTE =====
 app.post("/api/lead", async (req, res) => {
   try {
-    // NEW: Check for nested contact object in case payload matches the raw data dump
     const contactInfo = req.body.contact || {};
 
-    // NEW: Attempt to pull details from root body OR the nested contactInfo object
     const name = req.body.name || req.body.fullName || req.body.customerName || req.body.Name || contactInfo.name;
     const email = req.body.email || req.body.emailAddress || req.body.Email || contactInfo.email;
     const phone = req.body.phone || req.body.phoneNumber || req.body.Phone || contactInfo.phone;
@@ -329,7 +335,6 @@ app.post("/api/lead", async (req, res) => {
     
     const chatHistory = req.body.messages || req.body.transcript || req.body.history;
     
-    // NEW: Gracefully handle completely empty arrays / missing transcripts
     let formattedTranscript = "No transcript provided.";
     if (Array.isArray(chatHistory) && chatHistory.length > 0) {
       formattedTranscript = chatHistory.map(m => `${m.role === 'user' ? 'CUSTOMER' : 'BOT'}: ${m.content}`).join('\n\n');
@@ -372,7 +377,6 @@ ${JSON.stringify(req.body, null, 2)}`
 // ===== SEND ESTIMATE TO CUSTOMER =====
 app.post("/api/send-estimate", async (req, res) => {
   try {
-    // NEW: We now accept customSubject and customMessage from the frontend
     const { customerEmail, customerName, projectName, estimateAmount, portalLink, customSubject, customMessage } = req.body;
 
     const mailOptions = {
@@ -408,6 +412,7 @@ ${customMessage}
     res.status(500).json({ error: "Failed to send estimate." });
   }
 });
+
 // ===== SEND FOLLOW-UP EMAIL =====
 app.post("/api/send-followup", async (req, res) => {
   try {
@@ -437,11 +442,100 @@ app.post("/api/send-followup", async (req, res) => {
   }
 });
 
-// ===== APPROVAL NOTIFICATION & QUICKBOOKS WEBHOOK =====
+// ===== APPROVAL NOTIFICATION & DATABASE UPDATE (MOVED FROM FRONTEND) =====
 app.post("/api/approve-estimate", async (req, res) => {
   try {
-    const { customerName, customerEmail, projectName, adminLink, contractUrl, portalLink, startDate, subtotal, gst, grandTotal } = req.body;
+    const { projectId, customerName, customerEmail, projectName, adminLink, portalLink, subtotal, gst, grandTotal, contractText, lineItems } = req.body;
 
+    // NEW: Define work day calculation logic on the server
+    const isWorkDay = (date) => {
+      const day = date.getDay();
+      return day !== 0 && day !== 5 && day !== 6; // Skip Fri, Sat, Sun
+    };
+
+    const addWorkDays = (startDate, daysToAdd) => {
+      let currentDate = new Date(startDate);
+      let added = 0;
+      while (!isWorkDay(currentDate)) {
+        currentDate.setDate(currentDate.getDate() + 1);
+      }
+      while (added < daysToAdd) {
+        currentDate.setDate(currentDate.getDate() + 1);
+        if (isWorkDay(currentDate)) {
+          added++;
+        }
+      }
+      return currentDate;
+    };
+
+    // 1. Calculate New Auto-Start Date
+    let newStartDate = new Date();
+    newStartDate.setDate(newStartDate.getDate() + 1); 
+    
+    const { data: lastProjects } = await supabaseAdmin
+      .from('projects')
+      .select('start_date, duration_days')
+      .in('status', ['Scheduled', 'In Progress'])
+      .order('start_date', { ascending: false })
+      .limit(1);
+
+    if (lastProjects && lastProjects.length > 0 && lastProjects[0].start_date) {
+      const lastStart = new Date(lastProjects[0].start_date);
+      const duration = lastProjects[0].duration_days || 1;
+      newStartDate = addWorkDays(lastStart, duration);
+    } else {
+      while (!isWorkDay(newStartDate)) {
+        newStartDate.setDate(newStartDate.getDate() + 1);
+      }
+    }
+
+    const formattedStartDate = new Intl.DateTimeFormat('en-US', { month: 'long', day: 'numeric', year: 'numeric' }).format(newStartDate);
+
+    // 2. Upload Contract to Supabase Storage
+    const fileName = `${projectId}/Signed_Contract_${Date.now()}.txt`;
+    const contractBuffer = Buffer.from(contractText, 'utf8');
+    
+    const { error: uploadError } = await supabaseAdmin.storage
+      .from('project-files')
+      .upload(fileName, contractBuffer, { contentType: 'text/plain' });
+      
+    if (uploadError) throw uploadError;
+
+    const { data: urlData } = supabaseAdmin.storage.from('project-files').getPublicUrl(fileName);
+    const contractUrl = urlData.publicUrl;
+
+    // 3. Insert File Reference into Database
+    await supabaseAdmin.from('project_files').insert({
+      project_id: projectId,
+      file_name: `Signed_Contract_${customerName.replace(/\s+/g, '_')}.txt`,
+      file_url: contractUrl,
+      file_type: 'document'
+    });
+
+    // 4. Update Line Items Status (Approved / Rejected)
+    if (lineItems && lineItems.length > 0) {
+      for (const item of lineItems) {
+        await supabaseAdmin.from('project_line_items').update({
+          status: item.status
+        }).eq('id', item.id);
+      }
+    }
+
+    // 5. Update Overall Project Status & Estimate Amount
+    await supabaseAdmin.from('projects').update({
+      status: 'Scheduled',
+      start_date: newStartDate.toISOString(),
+      estimate: subtotal
+    }).eq('id', projectId);
+
+    // 6. Insert Auto-Comment to Site Log
+    await supabaseAdmin.from('project_comments').insert({
+      project_id: projectId,
+      content: `✅ The client (${customerName}) has officially approved the estimate for $${grandTotal.toLocaleString(undefined, {minimumFractionDigits: 2})} and signed the contract.\n🗓️ Auto-scheduled for: ${formattedStartDate}\n💰 The client has been reminded to send their $500 deposit.`,
+      is_from_client: true
+    });
+
+    // 7. Send Emails (Admin and Customer)
     const mailOptionsAdmin = {
       from: process.env.SMTP_USER,
       to: process.env.SMTP_USER,
@@ -455,7 +549,7 @@ app.post("/api/approve-estimate", async (req, res) => {
             <p style="margin: 5px 0 0 0; color: #065f46; font-size: 14px;">GST (5%): $${Number(gst).toLocaleString(undefined, {minimumFractionDigits: 2})}</p>
             <p style="margin: 10px 0 0 0; font-size: 20px; font-weight: 900; color: #064e3b;">Total: $${Number(grandTotal).toLocaleString(undefined, {minimumFractionDigits: 2})}</p>
           </div>
-          <p style="color: #065f46; font-size: 16px;">It has been automatically scheduled for: <strong>${startDate}</strong></p>
+          <p style="color: #065f46; font-size: 16px;">It has been automatically scheduled for: <strong>${formattedStartDate}</strong></p>
           <a href="${adminLink}" style="display: inline-block; padding: 12px 24px; background-color: #10b981; color: #fff; text-decoration: none; font-weight: bold; border-radius: 8px; margin-top: 15px;">View Project Dashboard</a>
           <p style="margin-top: 15px;"><a href="${contractUrl}" style="color: #047857;">View Signed Contract</a></p>
         </div>
@@ -480,7 +574,7 @@ app.post("/api/approve-estimate", async (req, res) => {
 
           <div style="background-color: #f8fafc; padding: 15px; border-radius: 8px; margin: 20px 0; border: 1px solid #e2e8f0;">
             <p style="margin: 0; color: #64748b; text-transform: uppercase; font-size: 12px; font-weight: bold;">Projected Start Date</p>
-            <p style="margin: 5px 0 0 0; font-size: 20px; font-weight: 900; color: #0f172a;">${startDate}</p>
+            <p style="margin: 5px 0 0 0; font-size: 20px; font-weight: 900; color: #0f172a;">${formattedStartDate}</p>
             <p style="margin: 5px 0 0 0; font-size: 12px; color: #64748b;">(Weather permitting)</p>
           </div>
 
@@ -496,6 +590,7 @@ app.post("/api/approve-estimate", async (req, res) => {
     await transporter.sendMail(mailOptionsAdmin);
     if(customerEmail) await transporter.sendMail(mailOptionsCustomer);
 
+    // 8. Fire Webhook (Zapier/QuickBooks)
     if (process.env.ZAPIER_WEBHOOK_URL) {
       try {
         const payload = JSON.stringify({
