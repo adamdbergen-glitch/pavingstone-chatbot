@@ -9,6 +9,7 @@ const https = require("https");
 const fs = require("fs");        
 const os = require("os");        
 const path = require("path");    
+
 // NEW: Import Supabase to bypass RLS securely from the backend
 const { createClient } = require('@supabase/supabase-js');
 const {
@@ -32,10 +33,15 @@ app.use(express.json({ limit: "50mb" }));
 
 const client = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
 
-// NEW: Initialize Supabase Admin Client using Service Role Key
+// --- SAFE SUPABASE INITIALIZATION ---
+// This auto-cleans the URL if you accidentally pasted "/rest/v1" or a trailing slash in Render
+// It also provides a fallback to your known URL so the server never crashes on boot.
+let rawSupabaseUrl = process.env.SUPABASE_URL || "https://qrmrsqnjwefrapefbazr.supabase.co";
+const cleanSupabaseUrl = rawSupabaseUrl.replace(/\/rest\/v1\/?$/, '').replace(/\/$/, '');
+
 const supabaseAdmin = createClient(
-  process.env.SUPABASE_URL,
-  process.env.SUPABASE_SERVICE_ROLE_KEY
+  cleanSupabaseUrl,
+  process.env.SUPABASE_SERVICE_ROLE_KEY || process.env.VITE_SUPABASE_ANON_KEY // fallback
 );
 
 const transporter = nodemailer.createTransport({
@@ -93,7 +99,7 @@ async function extractProjectDetailsAI(messages) {
 
   try {
     const completion = await client.chat.completions.create({
-      model: "gpt-5.4-nano", 
+      model: "gpt-4o-mini", 
       response_format: { type: "json_object" },
       messages: [{ role: "system", content: extractionPrompt }],
       temperature: 0.1, 
@@ -125,19 +131,16 @@ app.post("/api/chat", async (req, res) => {
   try {
     const messages = Array.isArray(req.body.messages) ? req.body.messages : [];
     
-    // NEW: LOGGING WHAT THE CUSTOMER SAID
     const lastUserMsg = messages[messages.length - 1]?.content || "N/A";
     console.log("👤 CUSTOMER SAID:", lastUserMsg);
 
     const completion = await client.chat.completions.create({
-      model: "gpt-5.4-nano", 
+      model: "gpt-4o-mini", 
       messages: [{ role: "system", content: SYSTEM_PROMPT }, ...messages],
       temperature: 0.5, 
     });
 
     let reply = completion.choices[0].message.content;
-    
-    // NEW: LOGGING WHAT THE BOT REPLIED
     console.log("🤖 BOT REPLIED:", reply);
 
     const recentText = (reply + " " + lastUserMsg).toLowerCase();
@@ -178,8 +181,6 @@ app.post("/api/chat", async (req, res) => {
 
         if (hasValidEstimates) {
           reply += estimateText + `\n\n*Please note these are just rough guesses based on averages!*`;
-          
-          // NEW: LOGGING THE CALCULATION
           console.log("💰 BALLPARK GENERATED:", estimateText.trim());
         }
       }
@@ -223,7 +224,6 @@ app.post("/api/internal-chat", async (req, res) => {
         });
         
         fs.unlinkSync(tempFilePath);
-
         console.log("🎙️ WHISPER HEARD:", transcription.text);
 
         aiMessages.push({
@@ -292,7 +292,7 @@ app.post("/api/internal-chat", async (req, res) => {
     `;
 
     const completion = await client.chat.completions.create({
-      model: "gpt-5.4-mini", 
+      model: "gpt-4o-mini", 
       response_format: { type: "json_object" },
       messages: [{ role: "system", content: ISOLATED_INTERNAL_PROMPT }, ...aiMessages],
       temperature: 0.1, 
@@ -442,28 +442,29 @@ app.post("/api/send-followup", async (req, res) => {
   }
 });
 
-// ===== APPROVAL NOTIFICATION & DATABASE UPDATE (MOVED FROM FRONTEND) =====
+// ===== APPROVAL NOTIFICATION & DATABASE UPDATE =====
 app.post("/api/approve-estimate", async (req, res) => {
   try {
     const { projectId, customerName, customerEmail, projectName, adminLink, portalLink, subtotal, gst, grandTotal, contractText, lineItems } = req.body;
 
-    // NEW: Define work day calculation logic on the server
+    // Safety checks to prevent 500 errors
+    if (!projectId || !contractText) {
+      console.warn("Invalid payload received. Missing projectId or contractText.");
+      return res.status(400).json({ error: "Missing required fields. Please ensure your app is fully reloaded." });
+    }
+
     const isWorkDay = (date) => {
       const day = date.getDay();
-      return day !== 0 && day !== 5 && day !== 6; // Skip Fri, Sat, Sun
+      return day !== 0 && day !== 5 && day !== 6; 
     };
 
     const addWorkDays = (startDate, daysToAdd) => {
       let currentDate = new Date(startDate);
       let added = 0;
-      while (!isWorkDay(currentDate)) {
-        currentDate.setDate(currentDate.getDate() + 1);
-      }
+      while (!isWorkDay(currentDate)) { currentDate.setDate(currentDate.getDate() + 1); }
       while (added < daysToAdd) {
         currentDate.setDate(currentDate.getDate() + 1);
-        if (isWorkDay(currentDate)) {
-          added++;
-        }
+        if (isWorkDay(currentDate)) { added++; }
       }
       return currentDate;
     };
@@ -492,7 +493,9 @@ app.post("/api/approve-estimate", async (req, res) => {
     const formattedStartDate = new Intl.DateTimeFormat('en-US', { month: 'long', day: 'numeric', year: 'numeric' }).format(newStartDate);
 
     // 2. Upload Contract to Supabase Storage
-    const fileName = `${projectId}/Signed_Contract_${Date.now()}.txt`;
+    // CLEAN THE FILE PATH TO PREVENT PGRST125 ERRORS
+    const safeCustomerName = (customerName || 'Client').replace(/[^a-zA-Z0-9-]/g, '_');
+    const fileName = `${projectId}/Signed_Contract_${safeCustomerName}_${Date.now()}.txt`;
     const contractBuffer = Buffer.from(contractText, 'utf8');
     
     const { error: uploadError } = await supabaseAdmin.storage
@@ -510,7 +513,7 @@ app.post("/api/approve-estimate", async (req, res) => {
     // 3. Insert File Reference into Database
     await supabaseAdmin.from('project_files').insert({
       project_id: projectId,
-      file_name: `Signed_Contract_${customerName.replace(/\s+/g, '_')}.txt`,
+      file_name: `Signed_Contract_${safeCustomerName}.txt`,
       file_url: contractUrl,
       file_type: 'document'
     });
@@ -590,7 +593,6 @@ app.post("/api/approve-estimate", async (req, res) => {
       `
     };
 
-    // NEW: Wrap email sending in try/catch to prevent 500 errors if Nodemailer fails
     try {
       await transporter.sendMail(mailOptionsAdmin);
       if(customerEmail) await transporter.sendMail(mailOptionsCustomer);
