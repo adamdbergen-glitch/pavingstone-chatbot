@@ -499,7 +499,10 @@ app.post("/api/approve-estimate", async (req, res) => {
       .from('project-files')
       .upload(fileName, contractBuffer, { contentType: 'text/plain' });
       
-    if (uploadError) throw uploadError;
+    if (uploadError) {
+      console.error("Supabase Storage Upload Error:", uploadError);
+      throw uploadError;
+    }
 
     const { data: urlData } = supabaseAdmin.storage.from('project-files').getPublicUrl(fileName);
     const contractUrl = urlData.publicUrl;
