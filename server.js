@@ -587,8 +587,13 @@ app.post("/api/approve-estimate", async (req, res) => {
       `
     };
 
-    await transporter.sendMail(mailOptionsAdmin);
-    if(customerEmail) await transporter.sendMail(mailOptionsCustomer);
+    // NEW: Wrap email sending in try/catch to prevent 500 errors if Nodemailer fails
+    try {
+      await transporter.sendMail(mailOptionsAdmin);
+      if(customerEmail) await transporter.sendMail(mailOptionsCustomer);
+    } catch (mailErr) {
+      console.error("Mail Delivery Error (Suppressed so the app doesn't crash):", mailErr);
+    }
 
     // 8. Fire Webhook (Zapier/QuickBooks)
     if (process.env.ZAPIER_WEBHOOK_URL) {
